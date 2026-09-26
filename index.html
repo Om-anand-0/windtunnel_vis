@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Windtunnel · real-time lattice Boltzmann</title>
+    <meta name="description" content="Interactive GPU wind tunnel: lattice Boltzmann CFD around any vehicle, in the browser." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0d11'/%3E%3Cpath d='M4 11h15c4 0 4-5 0-5M4 16h21c4 0 4 6 0 6M4 21h11' stroke='%23ffd166' stroke-width='2.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="app">
+      <header id="topbar"></header>
+      <aside id="panel"></aside>
+      <main id="view">
+        <canvas id="gpu"></canvas>
+        <div id="legends"></div>
+        <div id="hint">drag: orbit · wheel: zoom · right-drag: pan · space: pause · 1–4: cameras</div>
+        <div id="boot"><div class="spin"></div><div id="boot-msg">Initialising GPU…</div></div>
+      </main>
+      <aside id="hud"></aside>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
