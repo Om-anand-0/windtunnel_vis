@@ -57,14 +57,23 @@ near τ → ½. A Smagorinsky eddy viscosity is added from the same `Π^neq` (cl
 finite differences):
 `τ_eff = ½ (τ₀ + sqrt(τ₀² + 18√2 C_s² ‖Π^neq‖ / ρ))`.
 
+*Hybrid at walls.* Testing showed that the regularized projection excites an odd–even mode on cells
+that receive bounce-back populations (it grew into reverse flow along the moving belt). Cells with any
+bounce-back link therefore use plain BGK; belt-adjacent cells additionally get τ ≥ 0.53. The floor is
+**not** applied on the body, where it created a spurious Couette drag through the under-body gap.
+
 ### Boundaries
 
 * inlet (x = 0): equilibrium at (ρ = 1, U)
 * outlet (x = nx−1): zero-gradient on post-collision populations + viscous sponge zone
 * top / sides: free-slip (specular reflection)
 * ground: free-slip, no-slip (halfway bounce-back) or **moving** (bounce-back with wall momentum
-  `+6 wᵢ ρ (cᵢ·u_w)`) for the rolling road
-* vehicle: halfway bounce-back; the force is the momentum exchange `F = Σ 2 fᵢ* cᵢ` over fluid→solid links
+  `+6 wᵢ ρ (cᵢ·u_w)`) for the rolling road. Belt cells within 2 cells of the body are held still
+  (tyre contact patches) — the wheels do not rotate, and a belt sliding under a stationary tyre rams
+  the stagnant wedge fluid into it (4× drag overshoot in tests)
+* inlet absorbing layer: the first 3 % of the tunnel is blended towards the free-stream equilibrium
+* vehicle: halfway bounce-back; the force is the momentum exchange `F = Σ 2 (fᵢ* − wᵢρ₀) cᵢ` over
+  fluid→solid links (the reference state removes the absolute pressure on floor contact patches)
 
 ## Voxelization (GPU)
 
@@ -92,6 +101,21 @@ provides the loaders, geometry construction for the presets, math, the perspecti
 OrbitControls. The WebGL2 fallback (2D only) renders with Three.js' `WebGLRenderer`; the solver
 runs raw fragment-shader passes on the same GL context and the field textures are handed to
 Three.js materials as `ExternalTexture`s.
+
+## Backends
+
+`App` (units, averaging, stability watchdog, rake, UI) is API-agnostic and talks to a `Backend`
+(`src/backend/types.ts`):
+
+| | WebGPU | WebGL2 fallback |
+|---|---|---|
+| solver | `SolverGPU` (WGSL compute, 2D + 3D) | `SolverGL` (fragment shaders + MRT, 2D) |
+| voxelizer | `VoxelizerGPU` (compute + atomics) | `voxelizeCPU` (same algorithm) |
+| renderer | `RendererGPU` (raw WGSL pipelines) | `RendererGL` (Three.js + raw GPGPU tracers) |
+| force readback | mapAsync ring, ≤ 2 frames in flight | PBO + fence, polled |
+| step tuner signal | `onSubmittedWorkDone` latency | frame interval vs. vsync |
+
+Validation cases receive a `SolverFactory`, so the same checks run on either backend.
 
 ## Module map
 

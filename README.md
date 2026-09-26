@@ -122,7 +122,7 @@ like this:
 Open **Camera & export → Validation suite…** and run the checks. Each case runs on its own solver
 instance with analytic geometry, independent of the scene.
 
-| case | setup | expected | measured (this repo, SwiftShader CI run) |
+| case | setup | expected | measured (headless SwiftShader run of this repo) |
 |---|---|---|---|
 | Free stream | empty 2D tunnel, 1000 steps | max ‖u‖/U = 1 ± 1 %, ρ = 1 ± 1 % | 1.0000 / 1.0000 ✅ |
 | Cylinder Re = 100 | D2Q9, D = 24, 10 % blockage | St = fD/U in 0.16–0.20 (Williamson: 0.166) | St = 0.173 ✅ (D = 18 run, C_D ≈ 1.5) |

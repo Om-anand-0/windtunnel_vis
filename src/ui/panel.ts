@@ -282,7 +282,8 @@ export class Panel {
     c.upAxis.set(s.upAxis);
     c.flip.setVisible(isUpload);
     const center = this.app.presetInfo?.placement === 'center';
-    c.yaw.setEnabled(!center);
+    c.yaw.setEnabled(!center && is3D);
+    c.yaw.setHint?.(is3D ? '' : 'Crosswind needs the 3D solver');
     c.pitch.setEnabled(!center);
     c.ride.setEnabled(!center);
     c.speed.set(s.speedKmh);

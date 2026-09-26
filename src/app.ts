@@ -213,7 +213,7 @@ export class App {
       lengthFrac: 1 / 3,
       diamFrac: this.is3D ? 0.2 : 0.1,
       xFrac: center ? 0.25 : 0.34,
-      yawDeg: this.s.yaw,
+      yawDeg: this.is3D ? this.s.yaw : 0,
       pitchDeg: this.s.pitch,
       rideCells: center ? 0 : this.s.rideMm / 1000 / dxReal,
       spanwise: p?.spanwise,
@@ -297,7 +297,10 @@ export class App {
 
   // ---------------------------------------------------------------- stability
 
+  private lastStabFrame = -1000;
+
   private handleInstability(reason: string) {
+    this.lastStabFrame = this.frames;
     this.stab.events++;
     if (this.stab.uScale > 0.55) this.stab.uScale *= 0.85;
     else this.stab.nuScale *= 1.6;
@@ -311,7 +314,10 @@ export class App {
 
   private onStats = (st: SolverStats) => {
     if (st.step === 0) return;
+    // samples read back asynchronously may predate the last reset: drop them
+    if (st.step > this.backend.stepCount) return;
     this.lastStats = st;
+    if ((st.unstable || st.maxU * Math.sqrt(3) > 0.6) && this.frames - this.lastStabFrame < 30) return;
     if (st.unstable) {
       this.handleInstability(isFinite(st.fx) ? `Ma = ${(st.maxU * Math.sqrt(3)).toFixed(2)}` : 'NaN');
       return;

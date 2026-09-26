@@ -471,29 +471,32 @@ export class RendererGPU {
     pass.draw(6);
     }
 
-    // mesh
-    if (!SKIP.has('mesh') && s.mesh.visible && this.meshVB && this.meshCount) {
+    // mesh: opaque bodies go before the slice, see-through ones after it
+    const drawMesh = (wantTransparent: boolean) => {
       const transparent = s.mesh.opacity < 0.999;
-      pass.setPipeline(this.pipeline(`mesh${transparent ? 't' : ''}`, () => this.device.createRenderPipeline({
-        label: 'mesh',
-        layout: this.meshPipeLayout,
-        vertex: {
-          module: this.module(MESH_WGSL, 'mesh'), entryPoint: 'vs',
-          buffers: [{ arrayStride: 24, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 12, format: 'float32x3' }] }],
-        },
-        fragment: {
-          module: this.module(MESH_WGSL, 'mesh'), entryPoint: 'fs',
-          targets: [{ format: this.format, blend: transparent ? { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } : undefined }],
-        },
-        primitive: { topology: 'triangle-list', cullMode: 'none' },
-        depthStencil: { format: DEPTH, depthWriteEnabled: !transparent, depthCompare: 'less' },
-        multisample: { count: MSAA },
-      })));
-      pass.setBindGroup(1, this.meshBG);
-      pass.setVertexBuffer(0, this.meshVB);
-      pass.setIndexBuffer(this.meshIB!, 'uint32');
-      pass.drawIndexed(this.meshCount);
-    }
+      if (transparent === wantTransparent && !SKIP.has('mesh') && s.mesh.visible && this.meshVB && this.meshCount) {
+        pass.setPipeline(this.pipeline(`mesh${transparent ? 't' : ''}`, () => this.device.createRenderPipeline({
+          label: 'mesh',
+          layout: this.meshPipeLayout,
+          vertex: {
+            module: this.module(MESH_WGSL, 'mesh'), entryPoint: 'vs',
+            buffers: [{ arrayStride: 24, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 12, format: 'float32x3' }] }],
+          },
+          fragment: {
+            module: this.module(MESH_WGSL, 'mesh'), entryPoint: 'fs',
+            targets: [{ format: this.format, blend: transparent ? { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } : undefined }],
+          },
+          primitive: { topology: 'triangle-list', cullMode: 'none' },
+          depthStencil: { format: DEPTH, depthWriteEnabled: !transparent, depthCompare: 'less' },
+          multisample: { count: MSAA },
+        })));
+        pass.setBindGroup(1, this.meshBG);
+        pass.setVertexBuffer(0, this.meshVB);
+        pass.setIndexBuffer(this.meshIB!, 'uint32');
+        pass.drawIndexed(this.meshCount);
+      }
+    };
+    drawMesh(false);
 
     // slice heatmap
     if (s.slice.visible && !SKIP.has('slice')) {
@@ -502,6 +505,8 @@ export class RendererGPU {
       pass.setBindGroup(1, this.sliceBG);
       pass.draw(6);
     }
+
+    drawMesh(true);
 
     // vortex / recirculation iso-surface
     if (s.volume.visible && !is2D && !SKIP.has('volume')) {
