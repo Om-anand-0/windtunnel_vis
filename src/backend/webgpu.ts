@@ -17,9 +17,29 @@ export class WebGPUBackend implements Backend {
   private inFlight = 0;
   private lastDone = 0;
 
+  // GPU timestamps (when available) measure the real per-frame GPU time for the step tuner
+  private qs: GPUQuerySet | null = null;
+  private qResolve: GPUBuffer | null = null;
+  private qRead: { buf: GPUBuffer; busy: boolean }[] = [];
+
   constructor(readonly gpu: GpuContext, readonly canvas: HTMLCanvasElement) {
     this.renderer = new RendererGPU(gpu.device, canvas);
     this.vox = new VoxelizerGPU(gpu.device);
+    if (gpu.hasTimestamps) {
+      try {
+        const d = gpu.device;
+        this.qs = d.createQuerySet({ type: 'timestamp', count: 2 });
+        this.qResolve = d.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+        for (let i = 0; i < 3; i++) this.qRead.push({ buf: d.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), busy: false });
+      } catch {
+        this.qs = null;
+      }
+    }
+  }
+
+  private stamp(enc: GPUCommandEncoder, index: 0 | 1) {
+    const p = enc.beginComputePass({ timestampWrites: { querySet: this.qs!, ...(index === 0 ? { beginningOfPassWriteIndex: 0 } : { endOfPassWriteIndex: 1 }) } });
+    p.end();
   }
 
   get label() {
@@ -76,20 +96,37 @@ export class WebGPUBackend implements Backend {
   frame(steps: number, rs: RenderState, onStats: (s: SolverStats) => void) {
     const s = this.solver!;
     const enc = this.device.createCommandEncoder();
+    const rb = this.qs ? this.qRead.find((r) => !r.busy) : undefined;
+    if (rb) this.stamp(enc, 0);
     if (steps > 0) s.encodeSteps(enc, steps);
     s.encodePost(enc);
     this.renderer.render(enc, rs);
+    if (rb) {
+      this.stamp(enc, 1);
+      enc.resolveQuerySet(this.qs!, 0, 2, this.qResolve!, 0);
+      enc.copyBufferToBuffer(this.qResolve!, 0, rb.buf, 0, 16);
+      rb.busy = true;
+    }
     const tSubmit = performance.now();
     this.device.queue.submit([enc.finish()]);
     this.inFlight++;
     s.flushReads(onStats);
     this.renderer.afterSubmit();
+    if (rb) {
+      rb.buf.mapAsync(GPUMapMode.READ).then(() => {
+        const t = new BigInt64Array(rb.buf.getMappedRange().slice(0));
+        rb.buf.unmap();
+        rb.busy = false;
+        const ms = Number(t[1] - t[0]) / 1e6;
+        if (ms > 0 && ms < 1000) this.gpuMs = this.gpuMs * 0.8 + ms * 0.2;
+      }).catch(() => (rb.busy = false));
+    }
     this.device.queue.onSubmittedWorkDone().then(() => {
       this.inFlight--;
       const done = performance.now();
       const g = done - Math.max(tSubmit, this.lastDone);
       this.lastDone = done;
-      this.gpuMs = this.gpuMs * 0.8 + g * 0.2;
+      if (!this.qs) this.gpuMs = this.gpuMs * 0.8 + g * 0.2;
     }).catch(() => (this.inFlight = 0));
   }
 

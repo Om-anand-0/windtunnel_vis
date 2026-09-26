@@ -3,7 +3,7 @@
  *
  * The lattice uses Δx = Δt = 1 and ρ₀ = 1. A simulation is characterised by
  *   L  – reference length in cells (vehicle length, or diameter for validation bodies)
- *   U  – inlet speed in cells/step (kept ≤ 0.12 so Ma = U/c_s ≤ 0.2, c_s = 1/√3)
+ *   U  – inlet speed in cells/step (kept ≤ 0.08 so Ma = U/c_s ≤ 0.14, c_s = 1/√3)
  *   ν  – lattice viscosity, from which τ = 3ν + ½
  * and the only thing it shares with the real flow is the Reynolds number Re = U·L/ν.
  */
@@ -49,7 +49,7 @@ export interface FlowMapping {
 /** Lattice inlet speed for a given real speed: grows with speed so the flow visibly speeds up. */
 export function latticeSpeed(speed: number, vMax: number): number {
   const s = Math.min(Math.max(speed / vMax, 0), 1);
-  return 0.035 + (0.1 - 0.035) * s;
+  return 0.03 + (0.08 - 0.03) * s;
 }
 
 /**
@@ -62,7 +62,7 @@ export function latticeSpeed(speed: number, vMax: number): number {
 export function mapFlow(s: FlowSetup): FlowMapping {
   const reReal = (s.speed * s.lengthM) / s.nuAir;
   const U = latticeSpeed(s.speed, s.vMax) * s.uScale;
-  const reMaxGrid = (0.1 * s.Lcells) / s.nuMin;
+  const reMaxGrid = (0.08 * s.Lcells) / s.nuMin;
   const reRealMax = (s.vMax * s.lengthM) / AIR_NU;
   let reSim = s.reOverride && s.reOverride > 0 ? s.reOverride : reReal * (reMaxGrid / reRealMax);
   let nu = (U * s.Lcells) / reSim;

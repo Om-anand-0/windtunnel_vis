@@ -100,8 +100,9 @@ heatmaps, the surface Cp and the separation (ū_x < 0) iso-surface.
 The lattice works in its own units: Δx = Δt = 1, ρ₀ = 1. A run is described by three numbers:
 
 * `L`: reference length in cells (vehicle length ≈ nx/3, or the diameter for validation bodies)
-* `U`: inlet speed in cells/step. It is kept at or below 0.1, so the **Mach number** `U/c_s` stays ≤ 0.17
-  and the O(Ma²) compressibility error stays around 1–3 %
+* `U`: inlet speed in cells/step. It is kept at or below 0.08, so the inlet **Mach number** `U/c_s` stays ≤ 0.14
+  and the O(Ma²) compressibility error stays around 1–2 % in the free stream (locally higher where the flow
+  accelerates, e.g. over the roof in the blocked 2D tunnel)
 * `ν`: lattice viscosity, which sets τ
 
 The simulation shares **only the Reynolds number** `Re = U·L/ν` with the real flow. The mapping works
@@ -112,7 +113,7 @@ like this:
   lands on the highest Re the grid can carry stably with LES. Doubling the wind speed therefore
   doubles Re_sim, so the wake visibly changes with speed, but Re_sim stays far below Re_real (roughly
   2·10⁴–10⁵ in 2D and about 10⁴ in 3D). "Override simulated Re" sets Re_sim directly.
-* Lattice U also grows with the wind speed (0.035 → 0.1), so faster wind also looks faster.
+* Lattice U also grows with the wind speed (0.03 → 0.08), so faster wind also looks faster.
 * **Physical scales**: Δx = L_real / L cells and Δt = (U/V)·Δx, both shown in the HUD.
 * **Drag force in newtons**: `F = ½ ρ_air V² C_D A_real`, using the simulated C_D and the real frontal area.
   The frontal area is rasterised from the mesh.
@@ -126,10 +127,15 @@ instance with analytic geometry, independent of the scene.
 |---|---|---|---|
 | Free stream | empty 2D tunnel, 1000 steps | max ‖u‖/U = 1 ± 1 %, ρ = 1 ± 1 % | 1.0000 / 1.0000 ✅ |
 | Cylinder Re = 100 | D2Q9, D = 24, 10 % blockage | St = fD/U in 0.16–0.20 (Williamson: 0.166) | St = 0.173 ✅ (D = 18 run, C_D ≈ 1.5) |
-| Sphere Re = 100 | D3Q19, D = 20, 3.4 % blockage | C_D = 1.09 ± 20 % (Schiller–Naumann) | 1.34 at D = 10 (coarse test run). Run it at D = 20 in the app |
+| Sphere Re = 100 | D3Q19, D = 20, 3.4 % blockage | C_D = 1.09 ± 20 % (Schiller–Naumann) | 1.250 at D = 14 (+14.5 %) ✅, 1.342 at D = 10 (+23 %): converging with resolution |
 
 The cylinder check measures the Strouhal number from upward mean crossings of the lift coefficient
 after the transient. The shedding it reproduces is a von Kármán vortex street with the right frequency.
+The headless runs used smaller bodies (`?valscale=`) because SwiftShader emulates the GPU on the CPU.
+On a real GPU the in-app suite runs the full-size cases in seconds to a couple of minutes.
+
+For reference, the 3D sedan at a coarse 144×64×72 grid (L = 48 cells, Re_sim = 8·10³) settles around
+C_D ≈ 0.5–0.8 on the moving belt and 0.45–0.65 on a fixed floor.
 
 ## Known limitations
 

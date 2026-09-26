@@ -582,11 +582,16 @@ export class App {
     this.capture.afterFrame();
 
     // adapt steps/frame to the GPU time budget
-    if (!this.s.paused) {
+    // GPU-time says how much headroom there is; the measured frame rate has the final word, so a
+    // pessimistic timer can't throttle a fast GPU and an optimistic one can't drop frames
+    if (!this.s.paused && this.frames > 10) {
       const budget = (1000 / this.s.targetFps) * 0.8;
       const ratio = budget / Math.max(this.backend.gpuMs, 0.1);
-      const f = Math.min(Math.max(ratio, 0.85), 1.06);
-      this.stepsAuto = Math.min(Math.max(this.stepsAuto * f + (ratio > 1.2 ? 0.2 : 0), 1), this.is3D ? 60 : 400);
+      let f = Math.min(Math.max(ratio, 0.85), 1.06);
+      const fpsOk = this.fps >= this.s.targetFps * 0.93;
+      if (fpsOk && f < 1) f = 1;
+      if (this.fps < this.s.targetFps * 0.8) f = Math.min(f, 0.95);
+      this.stepsAuto = Math.min(Math.max(this.stepsAuto * f + (ratio > 1.2 && fpsOk ? 0.2 : 0), 1), this.is3D ? 60 : 400);
     }
 
     // slow-device guard for 3D
