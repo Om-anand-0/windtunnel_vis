@@ -208,3 +208,14 @@ table.metrics td:first-child { color: var(--dim); width: 38%; }
   #panel { border-right: 0; border-top: 1px solid var(--line); }
   #hud { display: none; }
 }
+
+/* ---------------------------------------------------------------- hover help */
+[data-tip] { cursor: help; }
+[data-tip] input, [data-tip] select, [data-tip] button, button[data-tip] { cursor: pointer; }
+#tip {
+  position: fixed; z-index: 50; max-width: 300px; padding: 8px 10px; border-radius: 7px;
+  background: #1a2029; border: 1px solid #334055; color: var(--text); font-size: 12px; line-height: 1.45;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); pointer-events: none;
+  opacity: 0; transform: translateY(2px); transition: opacity 0.12s, transform 0.12s;
+}
+#tip.show { opacity: 1; transform: none; }

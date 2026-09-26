@@ -28,12 +28,30 @@ npm run preview      # serve dist/
 It needs a browser with WebGPU for 3D (Chrome/Edge 113+, or Safari/Firefox with WebGPU enabled). Without
 WebGPU the app starts the WebGL2 fallback automatically, and `?webgl` forces it.
 
-### Deploy
+### Deploy (free)
 
-The build output is a fully static site (`base: './'`, no server code), so any static host works.
+The build output is a fully static site (`base: './'`, no server code). Every option below is free,
+serves over HTTPS (which WebGPU requires) and redeploys automatically when you push.
 
-* **Vercel**: import the repo; `vercel.json` already sets `npm run build` → `dist/`. Or run `npx vercel --prod`.
-* **GitHub Pages / Netlify / S3**: upload the contents of `dist/`.
+* **Vercel (recommended, easiest):** sign in at vercel.com with GitHub, choose *Add New → Project*, and
+  pick this repo. `vercel.json` already sets `npm run build` → `dist/`, so just press Deploy. Every
+  push to `main` then goes live, and other branches get preview URLs.
+* **GitHub Pages (no extra account):** go to repo *Settings → Pages → Source: GitHub Actions*, then push
+  to `main`. `.github/workflows/deploy-pages.yml` builds the site and publishes it to
+  `https://<user>.github.io/<repo>/`.
+* **Cloudflare Pages / Netlify:** connect the repo, with build command `npm run build` and output
+  directory `dist`.
+
+## Default settings
+
+The app opens in **3D on the High grid (256×128×128)** at a 45 fps target. That's tuned for laptop
+GPUs of the RTX 3070 Ti class. It shows 150k smoke particles with 20-frame trails, streamlines and a
+Q-criterion vortex iso-surface, and paints the time-averaged pressure (Cp) on the body. On a laptop,
+set your browser to *High performance* in Windows' graphics settings so it runs on the discrete GPU.
+If 3D runs below about 12 fps, the grid is reduced automatically and eventually the app falls back to
+2D. Browsers without WebGPU start in 2D.
+
+**Hover over any control or readout** to see what it does.
 
 ## Using it
 
@@ -45,7 +63,7 @@ The build output is a fully static site (`base: './'`, no server code), so any s
 | Screenshot | `P` (PNG with burned-in legend and numbers). "Record video" saves WebM |
 | Smoke rake / streamline seeds | drag the yellow handle in the viewport |
 
-URL parameters: `?mode=3d`, `?quality=low|medium|high|ultra`, `?vehicle=f1`, `?webgl`, plus any
+URL parameters: `?mode=2d|3d`, `?quality=low|medium|high|ultra`, `?vehicle=f1`, `?webgl`, plus any
 setting as `?s.<name>=<value>`, e.g. `?mode=3d&s.isoOn=1&s.field=3`. The names are listed in
 [`src/state.ts`](src/state.ts), so a URL can capture a view to share.
 

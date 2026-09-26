@@ -4,6 +4,7 @@ import { COLORMAPS } from '../render/colormaps';
 import { FIELDS, GRID_2D, GRID_3D, Quality } from '../state';
 import { loadModelFile } from '../voxelize/loaders';
 import { PRESETS } from '../voxelize/presets';
+import { applyButtonTips, BUTTON_TIPS, installTooltips, PANEL_TIPS } from './tips';
 import { buttonRow, Control, h, note, section, segmented, select, slider, toast, toggle } from './widgets';
 
 /** The left-hand control panel. Every control writes into app.s and triggers the right side effect. */
@@ -238,6 +239,10 @@ export class Panel {
     ]);
     buttonRow(cam, [{ label: 'Validation suite…', onClick: () => app.validation.open(), cls: 'wide accent' }]);
 
+    for (const [k, tip] of Object.entries(PANEL_TIPS)) if (this.ctl[k]) this.ctl[k].el.dataset.tip = tip;
+    applyButtonTips(root);
+    installTooltips();
+
     this.updateHints();
     this.sync();
     window.addEventListener('keydown', (e) => {
@@ -272,6 +277,7 @@ export class Panel {
     c.vehicle.set(s.vehicle);
     this.pauseBtn.textContent = s.paused ? '▶ Run' : '❚❚ Pause';
     this.pauseBtn.classList.toggle('accent', s.paused);
+    this.pauseBtn.dataset.tip = BUTTON_TIPS.find(([k]) => this.pauseBtn.textContent!.startsWith(k))?.[1] ?? '';
     c.simSpeed.set(s.simSpeed);
     c.lengthM.set(s.lengthM);
     c.yaw.set(s.yaw);

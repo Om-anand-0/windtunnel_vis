@@ -3,6 +3,7 @@ import { formatRe } from '../analysis/units';
 import { colormapCSS } from '../render/colormaps';
 import { FIELDS } from '../state';
 import { LineChart } from './chart';
+import { HUD_TIPS } from './tips';
 import { h } from './widgets';
 
 /** Top status bar, right-hand aero readouts with the Cd chart, and the colour legends. */
@@ -61,6 +62,10 @@ export class Hud {
         kv('Δx · Δt', 'dxdt'),
       ),
     );
+    for (const [k, tip] of Object.entries(HUD_TIPS)) {
+      const host = this.el[k]?.closest('.kv, .big') as HTMLElement | null;
+      if (host) host.dataset.tip = tip;
+    }
     this.legendField = h('div', { class: 'legend' });
     this.legendSurface = h('div', { class: 'legend' });
     document.getElementById('legends')!.append(this.legendField, this.legendSurface);

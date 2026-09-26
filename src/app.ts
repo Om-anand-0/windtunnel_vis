@@ -83,7 +83,9 @@ export class App {
   constructor(readonly backend: Backend) {
     this.rig = new CameraRig(backend.canvas, backend.kind === 'webgpu');
     const q = new URLSearchParams(location.search);
-    if (q.get('mode') === '3d' && backend.supports3D) this.s.mode = '3d';
+    if (q.get('mode') === '2d' || q.get('mode') === '3d') this.s.mode = q.get('mode') as '2d' | '3d';
+    // WebGL2 fallback has no 3D solver
+    if (!backend.supports3D) this.s.mode = '2d';
     if (q.get('vehicle')) this.s.vehicle = q.get('vehicle')!;
     if (q.get('quality')) {
       const v = q.get('quality') as Quality;
@@ -135,14 +137,16 @@ export class App {
       this.s.sliceAxis = 2;
       this.s.slicePos = 0.5;
       this.s.camera = 'free';
-      this.s.particleCount = 100000;
+      this.s.particleCount = 150000;
       this.s.trail = 20;
+      this.s.streamOn = true;
     } else {
       this.s.bodyOn = false;
       this.s.sliceAxis = 2;
       this.s.camera = 'side';
       this.s.particleCount = 100000;
       this.s.trail = 16;
+      this.s.streamOn = false;
     }
   }
 

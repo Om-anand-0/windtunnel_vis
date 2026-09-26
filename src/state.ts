@@ -102,7 +102,7 @@ export interface Settings {
 
 export function defaultSettings(): Settings {
   return {
-    mode: '2d',
+    mode: '3d',
     quality2D: 'high',
     quality3D: 'high',
     vehicle: 'sedan',
@@ -120,7 +120,7 @@ export function defaultSettings(): Settings {
     lesCs: 0.14,
     paused: false,
     simSpeed: 1,
-    targetFps: 60,
+    targetFps: 45,
     sliceOn: true,
     sliceAxis: 2,
     field: 0,
@@ -137,11 +137,11 @@ export function defaultSettings(): Settings {
     surface: 'cp',
     surfaceMean: true,
     particlesOn: true,
-    particleCount: 100000,
-    trail: 16,
+    particleCount: 150000,
+    trail: 20,
     emitter: 'rake',
     smokeColor: 'smoke',
-    streamOn: false,
+    streamOn: true,
     seeds: 40,
     streamMean: false,
     rakeOrient: 'vertical',
@@ -149,10 +149,10 @@ export function defaultSettings(): Settings {
     rakeY: 0.22,
     rakeZ: 0.5,
     rakeSpan: 0.4,
-    isoOn: false,
+    isoOn: true,
     isoMode: 'q',
     isoThr: 200,
     isoColor: 'speed',
-    camera: 'side',
+    camera: 'free',
   };
 }
