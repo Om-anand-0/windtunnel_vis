@@ -33,9 +33,9 @@ export const FIELDS: FieldDef[] = [
   { id: 0, key: 'speed', label: 'Velocity magnitude', unit: '|u| / U∞', cmap: 'turbo', range: [0, 1.5] },
   { id: 1, key: 'ux', label: 'Streamwise velocity', unit: 'uₓ / U∞', cmap: 'coolwarm', range: [-0.6, 1.4] },
   { id: 2, key: 'cp', label: 'Pressure coefficient', unit: 'Cp', cmap: 'coolwarm', range: [-1.5, 1] },
-  { id: 3, key: 'vort', label: 'Vorticity', unit: 'ω·L / U∞', cmap: 'coolwarm', range: [-40, 40], range3D: [-12, 12] },
+  { id: 3, key: 'vort', label: 'Vorticity', unit: 'ω·L / U∞', cmap: 'coolwarm', range: [-60, 60], range3D: [-15, 15] },
   { id: 4, key: 'ti', label: 'Turbulence intensity', unit: "√(⅔k) / U∞", cmap: 'inferno', range: [0, 0.4] },
-  { id: 5, key: 'q', label: 'Q-criterion', unit: 'Q·L² / U∞²', cmap: 'viridis', range: [-200, 200], range3D: [-50, 50] },
+  { id: 5, key: 'q', label: 'Q-criterion', unit: 'Q·L² / U∞²', cmap: 'coolwarm', range: [-2000, 2000], range3D: [-300, 300] },
 ];
 
 export interface Settings {
@@ -137,7 +137,7 @@ export function defaultSettings(): Settings {
     surface: 'cp',
     surfaceMean: true,
     particlesOn: true,
-    particleCount: 60000,
+    particleCount: 100000,
     trail: 16,
     emitter: 'rake',
     smokeColor: 'smoke',
@@ -151,7 +151,7 @@ export function defaultSettings(): Settings {
     rakeSpan: 0.4,
     isoOn: false,
     isoMode: 'q',
-    isoThr: 8,
+    isoThr: 200,
     isoColor: 'speed',
     camera: 'side',
   };

@@ -13,6 +13,8 @@ export class CameraRig {
   private anim: { p0: THREE.Vector3; p1: THREE.Vector3; t0: THREE.Vector3; t1: THREE.Vector3; start: number; dur: number } | null = null;
   private dims = { nx: 256, ny: 128, nz: 128 };
   preset: CameraPreset = 'free';
+  /** true once the user orbits/zooms; until then a preset is re-fitted when the viewport resizes */
+  private userMoved = false;
 
   constructor(dom: HTMLElement, webgpu: boolean) {
     this.camera = new THREE.PerspectiveCamera(35, 1, 1, 20000);
@@ -23,6 +25,7 @@ export class CameraRig {
     this.controls.screenSpacePanning = true;
     this.controls.addEventListener('start', () => {
       this.anim = null;
+      this.userMoved = true;
     });
   }
 
@@ -49,6 +52,7 @@ export class CameraRig {
 
   goTo(preset: CameraPreset, animate = true) {
     this.preset = preset;
+    this.userMoved = false;
     const { nx, ny, nz } = this.dims;
     const is2D = nz <= 1;
     const t = this.target();
@@ -88,6 +92,7 @@ export class CameraRig {
     if (Math.abs(aspect - this.camera.aspect) > 1e-4) {
       this.camera.aspect = aspect;
       this.camera.updateProjectionMatrix();
+      if (!this.userMoved && !this.anim) this.goTo(this.preset, false);
     }
     if (this.anim) {
       const k = Math.min(1, (performance.now() - this.anim.start) / this.anim.dur);

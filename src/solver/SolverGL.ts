@@ -188,6 +188,7 @@ uniform ivec2 N;
 uniform float U;
 out vec4 vort;
 vec2 v(ivec2 q) { return texelFetch(VEL, clamp(q, ivec2(0), N - 1), 0).xy; }
+bool sol(ivec2 q) { return texelFetch(VEL, clamp(q, ivec2(0), N - 1), 0).w > 0.5; }
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
   vec4 me = texelFetch(VEL, p, 0);
@@ -200,7 +201,12 @@ void main() {
   float S2 = sxx * sxx + syy * syy + 2.0 * sxy * sxy;
   float W2 = 0.5 * wz * wz;
   float k = max(m.w - dot(m.xy, m.xy), 0.0);
-  vort = vec4(wz, 0.5 * (W2 - S2), sqrt(k / 3.0) / max(U, 1e-6), 0.0);
+  float near = 0.0;
+  for (int d = 1; d <= 2; d++) {
+    float w = d == 1 ? 1.0 : 0.5;
+    if (sol(p + ivec2(d, 0)) || sol(p - ivec2(d, 0)) || sol(p + ivec2(0, d)) || sol(p - ivec2(0, d))) near = max(near, w);
+  }
+  vort = vec4(wz, 0.5 * (W2 - S2) * (1.0 - near), sqrt(k / 3.0) / max(U, 1e-6), 0.0);
 }`;
 
 /** 8×8 block reduction: sum x, y, w; max z. */
@@ -321,7 +327,8 @@ export class SolverGL {
   constructor(readonly gl: WebGL2RenderingContext, dims: GridDims, params: SolverParams) {
     if (dims.nz !== 1) throw new Error('SolverGL is 2D only');
     if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('EXT_color_buffer_float is required');
-    gl.getExtension('OES_texture_float_linear');
+    // float32 textures are only filterable with this extension; otherwise sample them NEAREST
+    const f32Linear = !!gl.getExtension('OES_texture_float_linear');
     this.dims = dims;
     this.n = dims.nx * dims.ny;
     this.p = { ...params };
@@ -346,7 +353,7 @@ export class SolverGL {
     this.statTex = makeTex(gl, nx, ny, gl.RGBA32F, gl.RGBA, gl.FLOAT);
     const m0 = new Float32Array(this.n * 4);
     for (let i = 2; i < m0.length; i += 4) m0[i] = 1;
-    this.meanTex = [makeTex(gl, nx, ny, gl.RGBA32F, gl.RGBA, gl.FLOAT, true, m0), makeTex(gl, nx, ny, gl.RGBA32F, gl.RGBA, gl.FLOAT, true, m0)];
+    this.meanTex = [makeTex(gl, nx, ny, gl.RGBA32F, gl.RGBA, gl.FLOAT, f32Linear, m0), makeTex(gl, nx, ny, gl.RGBA32F, gl.RGBA, gl.FLOAT, f32Linear, m0)];
     this.macroFbo = [mrt([this.velTex, this.statTex, this.meanTex[1]]), mrt([this.velTex, this.statTex, this.meanTex[0]])];
     this.vortFbo = mrt([this.vortTex]);
     let w = nx, h = ny;

@@ -33,6 +33,8 @@ export interface AeroReadout {
   mlups: number;
   convTime: number;
   maxMach: number;
+  /** frontal area / tunnel cross-section */
+  blockage: number;
 }
 
 export class App {
@@ -75,6 +77,8 @@ export class App {
   private csAvg = new Ema(0.05);
   private lastStats: SolverStats | null = null;
   private rakeActive = false;
+  /** set once the user moves the Q threshold slider */
+  isoThrUser = false;
 
   constructor(readonly backend: Backend) {
     this.rig = new CameraRig(backend.canvas, backend.kind === 'webgpu');
@@ -87,6 +91,16 @@ export class App {
       this.s.quality3D = v;
     }
     this.applyModeDefaults();
+    // any setting can be overridden from the URL, e.g. ?s.field=3&s.isoOn=1 (shareable views)
+    const rec = this.s as unknown as Record<string, unknown>;
+    for (const [k, v] of q) {
+      if (!k.startsWith('s.')) continue;
+      const key = k.slice(2);
+      if (!(key in rec)) continue;
+      const cur = rec[key];
+      rec[key] = typeof cur === 'number' ? parseFloat(v) : typeof cur === 'boolean' ? v === '1' || v === 'true' : v;
+      if (key === 'isoThr') this.isoThrUser = true;
+    }
   }
 
   async init() {
@@ -127,7 +141,7 @@ export class App {
       this.s.bodyOn = false;
       this.s.sliceAxis = 2;
       this.s.camera = 'side';
-      this.s.particleCount = 60000;
+      this.s.particleCount = 100000;
       this.s.trail = 16;
     }
   }
@@ -216,6 +230,8 @@ export class App {
     // reference length: vehicle length or body diameter
     this.Lcells = center ? pl.diamFrac * d.ny : scale;
     this.vinfo = await this.backend.voxelize(this.mesh, matrix.elements);
+    // vortex cores are a few cells across, so Q·L²/U² there scales like L²: pick a matching default
+    if (!this.isoThrUser) this.s.isoThr = Math.round(0.015 * this.Lcells * this.Lcells);
     const aN = frontalAreaNormalized(this.mesh, pl.yawDeg, pl.pitchDeg);
     if (center) {
       const p = this.presetInfo!;
@@ -343,6 +359,7 @@ export class App {
       mlups: (this.backend.cells * (this.fixedSpf || Math.round(this.stepsAuto * this.s.simSpeed)) * this.fps) / 1e6,
       convTime: (this.backend.stepCount * this.cur.U) / this.Lcells,
       maxMach: this.lastStats ? this.lastStats.maxU * Math.sqrt(3) : 0,
+      blockage: this.vinfo.frontal / (this.is3D ? this.dims.ny * this.dims.nz : this.dims.ny),
     };
   }
 
@@ -404,7 +421,7 @@ export class App {
       const ray = this.rig.ray(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
       const hit = new THREE.Vector3();
       if (ray.intersectPlane(plane, hit)) offset = hp.clone().sub(hit);
-      e.stopPropagation();
+      e.stopImmediatePropagation();
     }, { capture: true });
     c.addEventListener('pointermove', (e) => {
       const r = c.getBoundingClientRect();
@@ -486,7 +503,7 @@ export class App {
         mean: s.sliceMean,
         recirc: s.recirc,
         qContour: s.qContour,
-        qThr: this.is3D ? s.isoThr : s.isoThr * 4,
+        qThr: s.isoThr,
       },
       volume: {
         visible: s.isoOn && this.is3D,
@@ -503,7 +520,7 @@ export class App {
         emitter: s.emitter,
         colorMode: s.smokeColor,
         width: this.is3D ? 1.1 : 1.2,
-        alpha: s.emitter === 'rake' ? (this.is3D ? 0.35 : 0.5) : this.is3D ? 0.25 : 0.4,
+        alpha: s.emitter === 'rake' ? (this.is3D ? 0.35 : 0.38) : this.is3D ? 0.25 : 0.3,
         advance: steps > 0,
         steps,
         maxAge: Math.min(Math.max((1.2 * d.nx) / Math.max(this.cur.U * Math.max(steps, 1), 1e-3), 60), 6000),

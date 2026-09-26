@@ -52,6 +52,7 @@ export class Hud {
         kv('Drag force', 'drag'),
         kv('Downforce', 'down'),
         kv('Frontal area', 'area'),
+        kv('Blockage', 'block'),
         kv('Re (real)', 'reReal'),
         kv('Re (simulated)', 'reSim'),
         kv('Mach (inlet / max)', 'mach'),
@@ -109,6 +110,12 @@ export class Hud {
     e.drag.textContent = isFinite(r.dragN) ? `${r.dragN.toFixed(0)} N @ ${s.speedKmh.toFixed(0)} km/h` : '—';
     e.down.textContent = isFinite(r.cl) ? `${(-r.cl * q).toFixed(0)} N` : '—';
     e.area.textContent = `${r.frontalM2.toFixed(2)} m²`;
+    e.block.textContent = `${(r.blockage * 100).toFixed(1)} %`;
+    e.block.classList.toggle('warnv', r.blockage > 0.15);
+    const settling = r.convTime < 1;
+    if (settling) {
+      e.cdSub.textContent = `settling… t·U/L ${r.convTime.toFixed(2)} / 1`;
+    }
     e.reReal.textContent = formatRe(r.flow.reReal);
     e.reSim.textContent = formatRe(r.flow.reSim) + (s.reOverrideOn ? ' (override)' : '');
     e.mach.textContent = `${r.flow.mach.toFixed(3)} / ${r.maxMach.toFixed(3)}`;
@@ -117,8 +124,15 @@ export class Hud {
     e.U.textContent = `${a.currentU.toFixed(4)} cells/step`;
     e.dxdt.textContent = `${(r.flow.dx * 1000).toFixed(1)} mm · ${(r.flow.dt * 1e6).toFixed(1)} µs`;
 
+    // once past the start-up transient, hide it so the y-range follows the settled signal
+    const t0 = a.cdAvgSeries.t.length > 3 ? 1 : -Infinity;
+    const keep = (sr: { t: number[]; v: number[] }) => {
+      const i = sr.t.findIndex((t) => t >= t0);
+      return i <= 0 ? sr : { t: sr.t.slice(i), v: sr.v.slice(i) };
+    };
+    const inst = keep(a.cdSeries);
     this.chart.draw([
-      { t: a.cdSeries.t, v: a.cdSeries.v, color: '#6f86a8', width: 1, alpha: 0.55 },
+      { t: inst.t, v: inst.v, color: '#6f86a8', width: 1, alpha: 0.55 },
       { t: a.cdAvgSeries.t, v: a.cdAvgSeries.v, color: '#ffd166', width: 1.8 },
     ]);
 

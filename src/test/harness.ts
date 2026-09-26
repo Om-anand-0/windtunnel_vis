@@ -46,6 +46,39 @@ async function main() {
       s.destroy();
     }
   }
+  if (which.includes('export')) {
+    const THREE = await import('three');
+    const { GLTFExporter } = await import('three/examples/jsm/exporters/GLTFExporter.js');
+    const m = buildPreset(params.get('vehicle') ?? 'sports');
+    const g = new THREE.BufferGeometry();
+    // scale to metres and move to an arbitrary offset so the importer has to normalise
+    const pos = m.positions.map((v, i) => v * 4.5 + (i % 3 === 0 ? 10 : 0));
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setIndex(new THREE.BufferAttribute(m.indices, 1));
+    g.computeVertexNormals();
+    const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial());
+    const glb: ArrayBuffer = await new Promise((res, rej) => new GLTFExporter().parse(mesh, (r) => res(r as ArrayBuffer), rej, { binary: true }));
+    let obj = '';
+    for (let i = 0; i < pos.length; i += 3) obj += `v ${pos[i]} ${pos[i + 1]} ${pos[i + 2]}\n`;
+    for (let i = 0; i < m.indices.length; i += 3) obj += `f ${m.indices[i] + 1} ${m.indices[i + 1] + 1} ${m.indices[i + 2] + 1}\n`;
+    // binary STL, Z-up
+    const nt = m.indices.length / 3;
+    const stl = new DataView(new ArrayBuffer(84 + nt * 50));
+    stl.setUint32(80, nt, true);
+    for (let t = 0; t < nt; t++) {
+      const o = 84 + t * 50;
+      for (let k = 0; k < 3; k++) {
+        const vi = m.indices[3 * t + k] * 3;
+        const x = pos[vi], y = pos[vi + 1], z = pos[vi + 2];
+        stl.setFloat32(o + 12 + k * 12, x, true);
+        stl.setFloat32(o + 16 + k * 12, -z, true);
+        stl.setFloat32(o + 20 + k * 12, y, true);
+      }
+    }
+    const b64 = (buf: ArrayBuffer) => { let s = ''; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i++) s += String.fromCharCode(u[i]); return btoa(s); };
+    (window as any).__export = { glb: b64(glb), obj: btoa(obj), stl: b64(stl.buffer) };
+    log('exported');
+  }
   if (which.includes('ground')) {
     for (const ground of ['moving', 'noslip', 'freeslip'] as const) {
       const dims = { nx: 256, ny: 64, nz: 1 };

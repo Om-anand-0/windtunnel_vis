@@ -216,7 +216,10 @@ export class Panel {
       label: 'Field', options: [{ value: 'q', label: 'Q-criterion' }, { value: 'recirc', label: 'Separation (ūₓ<0)' }], value: s.isoMode,
       onChange: (v) => (s.isoMode = v as 'q' | 'recirc'),
     });
-    this.ctl.isoThr = slider(wake, { label: 'Q threshold', min: 0.5, max: 200, step: 0.1, value: s.isoThr, log: true, format: (v) => `${v.toFixed(1)} U²/L²`, onInput: (v) => (s.isoThr = v) });
+    this.ctl.isoThr = slider(wake, {
+      label: 'Q threshold', min: 5, max: 20000, step: 1, value: s.isoThr, log: true, format: (v) => `${v.toFixed(0)} U²/L²`,
+      onInput: (v) => { s.isoThr = v; app.isoThrUser = true; }, hint: 'Also used for the vortex-core contour on the slice',
+    });
     this.ctl.isoColor = segmented(wake, {
       label: 'Colour', options: [{ value: 'speed', label: 'Speed' }, { value: 'rotation', label: 'Rotation (ωₓ)' }], value: s.isoColor,
       onChange: (v) => (s.isoColor = v as 'speed' | 'rotation'),
@@ -312,6 +315,7 @@ export class Panel {
     c.streamOn.set(s.streamOn);
     c.rakeOrient.setVisible(is3D);
     c.isoOn.setEnabled(is3D);
+    c.isoThr.set(s.isoThr);
     c.camera.set(s.camera);
     this.updateHints();
   }

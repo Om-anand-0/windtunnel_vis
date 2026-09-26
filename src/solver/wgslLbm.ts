@@ -378,6 +378,10 @@ ${PARAMS_WGSL}
 @group(0) @binding(6) var statTex: texture_storage_3d<rgba16float, write>;
 @group(0) @binding(7) var meanTex: texture_storage_3d<rgba16float, write>;
 
+fn isSolidAt(q: vec3<i32>) -> bool {
+  if (any(q < vec3<i32>(0)) || q.x >= i32(P.nx) || q.y >= i32(P.ny) || q.z >= i32(P.nz)) { return false; }
+  return flags[u32(q.x) + P.nx * (u32(q.y) + P.ny * u32(q.z))] != 0u;
+}
 fn vel(p: vec3<i32>) -> vec3<f32> {
   let q = clamp(p, vec3<i32>(0), vec3<i32>(i32(P.nx) - 1, i32(P.ny) - 1, i32(P.nz) - 1));
   return textureLoad(velIn, q, 0).xyz;
@@ -407,7 +411,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         S2 += s * s; W2 += w * w;
       }
     }
-    vort = vec4<f32>(wx, wy, wz, 0.5 * (W2 - S2));
+    // Q is dominated by staircase shear right at the wall; fade it out within two cells of the body
+    // so iso-surfaces show the separated vortices rather than coating the vehicle
+    var near = 0.0;
+    for (var d = 1; d <= 2; d++) {
+      for (var a = 0; a < ${dim}; a++) {
+        var e = vec3<i32>(0);
+        e[a] = d;
+        if (isSolidAt(p + e) || isSolidAt(p - e)) { near = max(near, select(0.5, 1.0, d == 1)); }
+      }
+    }
+    vort = vec4<f32>(wx, wy, wz, 0.5 * (W2 - S2) * (1.0 - near));
   }
   let m = meanA[idx];
   let k = max(meanB[idx] - dot(m.xyz, m.xyz), 0.0);
