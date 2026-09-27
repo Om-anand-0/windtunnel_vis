@@ -131,6 +131,15 @@ export class App {
     if (fresh || forced2D) this.applyModeDefaults();
     this.startCam = q.get('cam')?.split(',').map(Number).filter((x) => isFinite(x)) ?? null;
     window.addEventListener('beforeunload', () => save(this.s));
+    // surface GPU validation/out-of-memory errors in the UI (once per distinct message)
+    const seen = new Set<string>();
+    window.addEventListener('gpu-error', (e) => {
+      const msg = String((e as CustomEvent).detail ?? '');
+      const key = msg.slice(0, 80);
+      if (seen.has(key) || seen.size > 5) return;
+      seen.add(key);
+      toast(`GPU error: ${msg.slice(0, 220)}${/memory/i.test(msg) ? ' — try a smaller grid or FP16 storage' : ''}`, 'error', 9000);
+    });
     // any setting can be overridden from the URL, e.g. ?s.field=3&s.isoOn=1 (shareable views)
     const rec = this.s as unknown as Record<string, unknown>;
     for (const [k, v] of q) {

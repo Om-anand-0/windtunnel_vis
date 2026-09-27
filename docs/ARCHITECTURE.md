@@ -124,3 +124,25 @@ Validation cases receive a `SolverFactory`, so the same checks run on either bac
 * `src/render/`  – WebGPU renderer, WebGL fallback renderer, colormaps, camera rig
 * `src/ui/`      – control panel, readouts, Cd chart, legend, validation panel, capture
 * `src/analysis/` – unit conversion (lattice ↔ SI), aero coefficients, Strouhal estimator, validation cases
+
+## Later additions
+
+* **Interpolated bounce-back (Bouzidi).** The voxelizer's `sdf` pass samples every triangle and writes
+  exact point–triangle distances for cell centres within 2.5 cells (encoded `~bits` + `atomicMax`, so a
+  cleared buffer means "unknown"). A boundary link's wall fraction is `q = d_fluid / (d_fluid + d_solid)`.
+  Streaming and momentum exchange use the same Bouzidi combination, and unknown distances fall back to
+  halfway bounce-back.
+* **Rotating wheels.** Preset builders record wheel cylinders. After voxelization, solid cells inside a
+  wheel are tagged `flags = 1 | (k+1) << 8`. Bounce-back from a tagged cell adds the moving-wall term with
+  `u_w = (U/R) · axis × (x − c)`. On a staircase, the curved wall's velocity isn't tangent to every voxel
+  face, so the net (mass) part of the per-cell moving-wall sum is removed (`corr = Σmv / Σw`), both when
+  streaming and in the force. Without this, drag was 3–4× too high.
+* **FP16 storage.** `fᵢ − wᵢ` in half precision, with cells (2p, 2p+1) packed into one `u32` via
+  `pack2x16float`. One thread updates a pair, so stores are full words. Loads go through `ld(k, c)`,
+  which unpacks the needed half. The kernels are generated once and a regex rewrites `fin[k * N + c]`
+  into `ld(k, c)`, so the FP32 and FP16 variants share all the physics code.
+* **Empty-space skipping.** A 4³ brick grid stores the maximum Q and the minimum mean uₓ (with a 1-cell
+  border). The ray-march jumps over bricks that can't contain the iso-surface.
+* **Statistics.** A convective-time clock is accumulated per frame (robust to U changes). Coefficients
+  are averaged over the last 4 L/U with a batch-means standard error; transients after resets, geometry
+  changes and flow changes are excluded.

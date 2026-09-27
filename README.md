@@ -214,6 +214,11 @@ npm test -- "--case=car&vehicle=f1&dims=256,96,1&steps=2000&prec=f16"   # any ha
 The tests run the real WGSL kernels in headless Chromium on SwiftShader's software WebGPU.
 `.github/workflows/ci.yml` runs type-check, build and `npm test` on every push and pull request.
 
+Debug URL switches (development only): `?offscreen` renders into a texture and blits it through a
+readback. Headless Chromium can't present WebGPU canvases, so this lets you take screenshots in CI-like
+environments. `?skip=slice,trails,…` disables individual render passes, `?spf=N` forces N solver steps
+per frame, and `?webgl` forces the fallback backend.
+
 ## Architecture
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the data layout, the shader passes, the

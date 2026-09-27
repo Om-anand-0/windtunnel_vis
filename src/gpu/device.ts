@@ -41,7 +41,9 @@ export async function initWebGPU(): Promise<GpuContext | null> {
   const info = (adapter as GPUAdapter & { info?: GPUAdapterInfo }).info;
   const adapterInfo = info ? [info.vendor, info.architecture, info.description].filter(Boolean).join(' ') : 'WebGPU';
   device.addEventListener('uncapturederror', (ev) => {
-    console.error('WebGPU error:', (ev as GPUUncapturedErrorEvent).error.message);
+    const msg = (ev as GPUUncapturedErrorEvent).error.message;
+    console.error('WebGPU error:', msg);
+    window.dispatchEvent(new CustomEvent('gpu-error', { detail: msg }));
   });
   // keep a global reference: some Chromium builds drop the instance if the adapter is collected
   (globalThis as unknown as { __gpuAdapter: GPUAdapter }).__gpuAdapter = adapter;
