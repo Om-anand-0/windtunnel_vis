@@ -193,6 +193,15 @@ struct VolU {
   stepLen: f32, opacity: f32, p0: f32, p1: f32,
 };
 @group(1) @binding(0) var<uniform> V: VolU;
+// 4³-cell bricks: (max Q, min mean uₓ) incl. a 1-cell border — rays skip bricks that cannot hold the surface
+@group(1) @binding(1) var brickTex: texture_3d<f32>;
+
+fn skipBrick(b: vec4<f32>) -> bool {
+  let U = max(F.flow.x, 1e-5);
+  let L = F.flow.z;
+  if (V.mode == 0u) { return b.x * L * L / (U * U) - V.thr < 0.0; }
+  return -b.y / U - V.thr * 0.02 < 0.0;
+}
 
 struct VO { @builtin(position) pos: vec4<f32>, @location(0) ndc: vec2<f32> };
 
@@ -237,7 +246,18 @@ struct FO { @location(0) color: vec4<f32>, @builtin(frag_depth) depth: f32 };
   var prev = field(ro + rd * t);
   var hit = false;
   var th = 0.0;
-  for (var k = 0u; k < V.maxSteps; k++) {
+  let bd = vec3<i32>(textureDimensions(brickTex)) - vec3<i32>(1);
+  let rdi = 1.0 / (rd + vec3<f32>(1e-12));
+  for (var k = 0u; k < V.maxSteps * 2u; k++) {
+    let bi = clamp(vec3<i32>(floor((ro + rd * t) / 4.0)), vec3<i32>(0), bd);
+    if (skipBrick(textureLoad(brickTex, bi, 0))) {
+      let bmin = vec3<f32>(bi) * 4.0;
+      let tb3 = (select(bmin, bmin + vec3<f32>(4.0), rd > vec3<f32>(0.0)) - ro) * rdi;
+      t = max(min(min(tb3.x, tb3.y), tb3.z), t) + 0.02;
+      prev = -1.0;
+      if (t > tmax) { break; }
+      continue;
+    }
     let tn = t + V.stepLen;
     if (tn > tmax) { break; }
     let fv = field(ro + rd * tn);

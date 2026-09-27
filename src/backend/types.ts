@@ -1,6 +1,6 @@
 import type { RenderState } from '../render/renderState';
 import type { FieldExport, GridDims, SolverParams, SolverStats } from '../solver/types';
-import type { MeshData } from '../voxelize/mesh';
+import type { MeshData, WheelDef } from '../voxelize/mesh';
 import type { VoxelInfo } from '../voxelize/VoxelizerGPU';
 
 /** Minimal solver surface used by the validation cases (implemented by both GPU solvers). */
@@ -9,6 +9,8 @@ export interface LbmSolver {
   readonly n: number;
   stepCount: number;
   uploadFlags(flags: Uint32Array): void;
+  /** distances to the wall (cells, < 0 = unknown) for interpolated bounce-back */
+  uploadSdf?(d: Float32Array): void;
   stepAndSample(steps: number): Promise<SolverStats>;
   destroy(): void;
 }
@@ -28,12 +30,13 @@ export interface Backend {
   readonly gpuMs: number;
   readonly stepCount: number;
   readonly cells: number;
-  fits(dims: GridDims): boolean;
+  fits(dims: GridDims, precision?: 'f32' | 'f16'): boolean;
   createSolver(dims: GridDims, p: SolverParams): Promise<void>;
   setParams(p: Partial<SolverParams>): void;
   reset(): void;
   clearStats(): void;
-  voxelize(mesh: MeshData | null, matrix: ArrayLike<number>): Promise<VoxelInfo>;
+  /** voxelize the mesh into the solver; `wheels` (grid space) spin with the rolling road */
+  voxelize(mesh: MeshData | null, matrix: ArrayLike<number>, wheels?: WheelDef[]): Promise<VoxelInfo>;
   setMesh(mesh: MeshData | null): void;
   refillParticles(): void;
   pixelSize(): [number, number];

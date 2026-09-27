@@ -199,6 +199,97 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 `;
 
 /**
+ * Unsigned distance (cells) from cell centres near the surface to the mesh, for interpolated
+ * bounce-back. Stored as ~bitcast<u32>(d) with atomicMax (0 = unknown), so a cleared buffer works.
+ */
+export const sdfWGSL = /* wgsl */ `
+${COMMON}
+${TRI}
+@group(0) @binding(8) var<storage, read_write> sdf: array<atomic<u32>>;
+
+fn closestPt(p: vec3<f32>, a: vec3<f32>, b: vec3<f32>, c: vec3<f32>) -> vec3<f32> {
+  let ab = b - a; let ac = c - a; let ap = p - a;
+  let d1 = dot(ab, ap); let d2 = dot(ac, ap);
+  if (d1 <= 0.0 && d2 <= 0.0) { return a; }
+  let bp = p - b; let d3 = dot(ab, bp); let d4 = dot(ac, bp);
+  if (d3 >= 0.0 && d4 <= d3) { return b; }
+  let vc = d1 * d4 - d3 * d2;
+  if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) { return a + ab * (d1 / (d1 - d3)); }
+  let cp = p - c; let d5 = dot(ab, cp); let d6 = dot(ac, cp);
+  if (d6 >= 0.0 && d5 <= d6) { return c; }
+  let vb = d5 * d2 - d1 * d6;
+  if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) { return a + ac * (d2 / (d2 - d6)); }
+  let va = d3 * d6 - d5 * d4;
+  if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) { return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6))); }
+  let den = 1.0 / (va + vb + vc);
+  return a + ab * (vb * den) + ac * (vc * den);
+}
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let t = gid.x + gid.y * V.strideX;
+  if (t >= V.triCount) { return; }
+  let a = vtx(3u * t);
+  let b = vtx(3u * t + 1u);
+  let c = vtx(3u * t + 2u);
+  let e1 = b - a;
+  let e2 = c - a;
+  if (length(cross(e1, e2)) < 1e-12) { return; }
+  let m = max(max(length(e1), length(e2)), length(e2 - e1));
+  let steps = u32(clamp(ceil(m / 0.7), 1.0, 256.0));
+  let fs = f32(steps);
+  let is2D = V.nz == 1u;
+  let R = 2;
+  for (var i = 0u; i <= steps; i++) {
+    for (var j = 0u; j <= steps - i; j++) {
+      let p = a + e1 * (f32(i) / fs) + e2 * (f32(j) / fs);
+      if (is2D && abs(p.z - 0.5) > 2.5) { continue; }
+      let base = vec3<i32>(floor(p));
+      for (var dz = -R; dz <= R; dz++) {
+        if (is2D && dz != 0) { continue; }
+        for (var dy = -R; dy <= R; dy++) {
+          for (var dx = -R; dx <= R; dx++) {
+            var q = base + vec3<i32>(dx, dy, dz);
+            if (is2D) { q.z = 0; }
+            if (any(q < vec3<i32>(0)) || q.x >= i32(V.nx) || q.y >= i32(V.ny) || q.z >= i32(V.nz)) { continue; }
+            var ctr = vec3<f32>(q) + vec3<f32>(0.5);
+            let d = distance(ctr, closestPt(ctr, a, b, c));
+            if (d > 2.5) { continue; }
+            atomicMax(&sdf[cellOf(vec3<u32>(q))], ~bitcast<u32>(d));
+          }
+        }
+      }
+    }
+  }
+}
+`;
+
+/** Tag solid cells that belong to a wheel (flags = 1 | (k+1) << 8) for the rotating-wheel boundary. */
+export const wheelTagWGSL = /* wgsl */ `
+${COMMON}
+struct Wheels { count: u32, p0: u32, p1: u32, p2: u32, w: array<vec4<f32>, 32> };
+@group(0) @binding(5) var<storage, read_write> flags: array<u32>;
+@group(0) @binding(7) var<uniform> WH: Wheels;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let id = gid.x + gid.y * V.strideX;
+  if (id >= V.n || flags[id] == 0u) { return; }
+  let p = vec3<f32>(f32(id % V.nx), f32((id / V.nx) % V.ny), f32(id / (V.nx * V.ny))) + vec3<f32>(0.5);
+  for (var k = 0u; k < WH.count; k++) {
+    let a = WH.w[2u * k];
+    let b = WH.w[2u * k + 1u];
+    let d = p - a.xyz;
+    let al = dot(d, b.xyz);
+    let rad = length(d - al * b.xyz);
+    if (abs(al) <= b.w + 0.6 && rad <= 1.0 / a.w + 0.75) {
+      flags[id] = 1u | ((k + 1u) << 8u);
+      return;
+    }
+  }
+}
+`;
+
+/**
  * Frontal projection + bounding box. info = [frontalCount, solidCount, minx, miny, minz, maxx, maxy, maxz]
  */
 export const projectWGSL = /* wgsl */ `

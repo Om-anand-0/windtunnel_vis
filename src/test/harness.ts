@@ -3,7 +3,7 @@ import { CASES } from '../analysis/validation';
 import { SolverGPU } from '../solver/SolverGPU';
 import { VoxelizerGPU } from '../voxelize/VoxelizerGPU';
 import { buildPreset } from '../voxelize/presets';
-import { placementMatrix } from '../voxelize/mesh';
+import { gridWheels, placementMatrix } from '../voxelize/mesh';
 
 const out = document.getElementById('out')!;
 const log = (s: string) => { out.textContent += '\n' + s; console.log(s); };
@@ -37,7 +37,7 @@ async function main() {
   }
   if (which.includes('vox')) {
     const vox = new VoxelizerGPU(g.device);
-    for (const [id, dims] of [['sphere', { nx: 128, ny: 64, nz: 64 }], ['sphere', { nx: 512, ny: 192, nz: 1 }], ['sedan', { nx: 192, ny: 96, nz: 96 }], ['f1', { nx: 1024, ny: 384, nz: 1 }], ['truck', { nx: 192, ny: 96, nz: 96 }]] as const) {
+    for (const [id, dims] of [['sphere', { nx: 128, ny: 64, nz: 64 }], ['sphere', { nx: 512, ny: 192, nz: 1 }], ['sedan', { nx: 192, ny: 96, nz: 96 }], ['f1', { nx: 1024, ny: 384, nz: 1 }], ['truck', { nx: 192, ny: 96, nz: 96 }], ['ahmed25', { nx: 768, ny: 160, nz: 1 }]] as const) {
       const s = new SolverGPU(g.device, dims, { u: 0.05, nu: 0.01, cs: 0.1, ground: 'noslip', sides: 'freeslip', spongeNu: 0, spongeStart: 0.9, emaAlpha: 0 });
       const mesh = buildPreset(id);
       const pl = placementMatrix(mesh, dims, { mode: id === 'sphere' ? 'center' : 'ground', lengthFrac: 1 / 3, diamFrac: 0.3, xFrac: 0.35, yawDeg: 0, pitchDeg: 0, rideCells: 0 });
@@ -131,10 +131,17 @@ async function main() {
     const L = nx / 3;
     const nu = (U * L) / Re;
     const cs = parseFloat(params.get('cs') ?? '0.14');
-    const s = new SolverGPU(g.device, dims, { u: U, nu, cs, ground: (params.get('ground') ?? 'moving') as any, sides: 'freeslip', spongeNu: 0.04, spongeStart: 0.84, emaAlpha: 0, collision: (params.get('coll') ?? 'regularized') as any, tauWall: parseFloat(params.get('tw') ?? '0.53'), spongeIn: parseFloat(params.get('sin') ?? '0') });
+    const s = new SolverGPU(g.device, dims, { u: U, nu, cs, ground: (params.get('ground') ?? 'moving') as any, sides: 'freeslip', spongeNu: 0.04, spongeStart: 0.84, emaAlpha: 0, collision: (params.get('coll') ?? 'regularized') as any, precision: (params.get('prec') ?? 'f32') as any, tauWall: parseFloat(params.get('tw') ?? '0.53'), spongeIn: parseFloat(params.get('sin') ?? '0') });
     const mesh = buildPreset(id);
     const pl = placementMatrix(mesh, dims, { mode: id === 'sphere' || id === 'cylinder' ? 'center' : 'ground', lengthFrac: 1 / 3, diamFrac: 0.3, xFrac: 0.34, yawDeg: 0, pitchDeg: 0, rideCells: parseFloat(params.get('ride') ?? '0') });
-    const info = await vox.voxelize(s, mesh, pl.matrix.elements);
+    const wheels = params.get('wheels') === '1' ? gridWheels(mesh, pl.matrix) : [];
+    const info = await vox.voxelize(s, mesh, pl.matrix.elements, wheels);
+    if (wheels.length) {
+      const f = await s.readFlags();
+      let tagged = 0;
+      for (const v of f) if (v >> 8) tagged++;
+      log(`wheels: ${wheels.length}, tagged cells ${tagged}, r=${wheels[0].r.toFixed(2)} hw=${wheels[0].hw.toFixed(2)} c=${wheels[0].c.map((x) => x.toFixed(1))}`);
+    }
     log(`car ${id} dims ${q} frontal ${info.frontal} tau ${(3 * nu + 0.5).toFixed(5)} Re ${Re}`);
     const total = parseInt(params.get('steps') ?? '20000');
     const chunk = 250;
@@ -169,7 +176,8 @@ async function main() {
     log('running ' + c.name);
     try {
       let lastP = -1;
-      const r = await c.run((d, p) => new SolverGPU(g.device, d, p), (f) => {
+      const prec = (params.get('prec') ?? 'f32') as 'f32' | 'f16';
+      const r = await c.run((d, p) => new SolverGPU(g.device, d, { ...p, precision: prec }), (f) => {
         const pc = Math.floor(f * 10) * 10;
         if (pc !== lastP) { lastP = pc; console.log(`[progress] ${c.id} ${pc}%`); }
       }, () => false);

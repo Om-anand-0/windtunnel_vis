@@ -121,6 +121,31 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+/** Brick pyramid for empty-space skipping in the iso-surface ray-march. */
+export const BRICKS_WGSL = /* wgsl */ `
+${FRAME_WGSL}
+@group(1) @binding(0) var brickOut: texture_storage_3d<rgba16float, write>;
+@compute @workgroup_size(4, 4, 4)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let bd = textureDimensions(brickOut);
+  if (any(gid >= bd)) { return; }
+  let d = vec3<i32>(F.dims.xyz) - vec3<i32>(1);
+  var mq = -1e9;
+  var mu = 1e9;
+  let o = vec3<i32>(gid) * 4;
+  for (var z = -1; z <= 4; z++) {
+    for (var y = -1; y <= 4; y++) {
+      for (var x = -1; x <= 4; x++) {
+        let c = clamp(o + vec3<i32>(x, y, z), vec3<i32>(0), d);
+        mq = max(mq, textureLoad(vortTex, c, 0).w);
+        if (textureLoad(statTex, c, 0).y < 0.5) { mu = min(mu, textureLoad(meanTex, c, 0).x); }
+      }
+    }
+  }
+  textureStore(brickOut, vec3<i32>(gid), vec4<f32>(mq, mu, 0.0, 0.0));
+}
+`;
+
 export const STREAMLINES_WGSL = /* wgsl */ `
 ${FRAME_WGSL}
 struct SLU {

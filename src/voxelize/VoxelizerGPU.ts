@@ -1,7 +1,7 @@
 import { dispatch1D } from '../gpu/device';
 import type { SolverGPU } from '../solver/SolverGPU';
-import type { MeshData } from './mesh';
-import { crossingsWGSL, finalizeWGSL, projectWGSL, scanWGSL, surfaceWGSL } from './wgslVoxel';
+import type { MeshData, WheelDef } from './mesh';
+import { crossingsWGSL, finalizeWGSL, projectWGSL, scanWGSL, sdfWGSL, surfaceWGSL, wheelTagWGSL } from './wgslVoxel';
 
 export interface VoxelInfo {
   /** projected (frontal) area in cells² (3D) or projected height in cells (2D) */
@@ -26,6 +26,8 @@ export class VoxelizerGPU {
     this.pipes.surf = mk(surfaceWGSL, 'vox-surface');
     this.pipes.fin = mk(finalizeWGSL, 'vox-finalize');
     this.pipes.proj = mk(projectWGSL, 'vox-project');
+    this.pipes.wheel = mk(wheelTagWGSL, 'vox-wheels');
+    this.pipes.sdf = mk(sdfWGSL, 'vox-sdf');
   }
 
   private upload(mesh: MeshData) {
@@ -43,12 +45,14 @@ export class VoxelizerGPU {
   /**
    * @param matrix column-major 4×4 transform from mesh space into grid space
    */
-  async voxelize(solver: SolverGPU, mesh: MeshData | null, matrix: ArrayLike<number>): Promise<VoxelInfo> {
+  async voxelize(solver: SolverGPU, mesh: MeshData | null, matrix: ArrayLike<number>, wheels: WheelDef[] = []): Promise<VoxelInfo> {
+    solver.setWheels(wheels);
     const d = this.device;
     const { nx, ny, nz } = solver.dims;
     const n = solver.n;
     if (!mesh || mesh.indices.length === 0) {
       d.queue.writeBuffer(solver.flags, 0, new Uint32Array(n));
+      d.queue.writeBuffer(solver.sdf, 0, new Uint32Array(n));
       return { frontal: 0, solidCells: 0, min: [0, 0, 0], max: [0, 0, 0] };
     }
     this.upload(mesh);
@@ -77,6 +81,7 @@ export class VoxelizerGPU {
     const enc = d.createCommandEncoder({ label: 'voxelize' });
     enc.clearBuffer(hits);
     enc.clearBuffer(vote);
+    enc.clearBuffer(solver.sdf);
     const pass = enc.beginComputePass();
     // 1. crossings
     {
@@ -106,6 +111,20 @@ export class VoxelizerGPU {
       const { ub, disp } = mkParams(0, n);
       pass.setPipeline(this.pipes.fin);
       pass.setBindGroup(0, bg(this.pipes.fin, [[0, ub], [4, vote], [5, solver.flags]]));
+      pass.dispatchWorkgroups(disp.x, disp.y);
+    }
+    // 4a. distance to the surface near the wall (interpolated bounce-back)
+    {
+      const { ub, disp } = mkParams(0, triCount);
+      pass.setPipeline(this.pipes.sdf);
+      pass.setBindGroup(0, bg(this.pipes.sdf, [[0, ub], [1, this.posBuf!], [2, this.idxBuf!], [8, solver.sdf]]));
+      pass.dispatchWorkgroups(disp.x, disp.y);
+    }
+    // 4b. wheel tags for the rotating-wheel boundary
+    if (wheels.length) {
+      const { ub, disp } = mkParams(0, n);
+      pass.setPipeline(this.pipes.wheel);
+      pass.setBindGroup(0, bg(this.pipes.wheel, [[0, ub], [5, solver.flags], [7, solver.wheelBuffer]]));
       pass.dispatchWorkgroups(disp.x, disp.y);
     }
     // 5. frontal projection + bbox

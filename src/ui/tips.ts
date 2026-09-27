@@ -3,6 +3,7 @@
 export const PANEL_TIPS: Record<string, string> = {
   mode: '2D runs a high-resolution D2Q9 solver on the vehicle’s centre-plane slice (fast, no wheels). 3D runs the full D3Q19 solver around the whole vehicle (needs WebGPU).',
   quality: 'Grid resolution. More cells resolve finer flow detail and allow a higher Reynolds number, but each step costs proportionally more GPU time. If a grid does not fit this GPU’s buffer limits it is reduced automatically.',
+  precision: 'How the solver stores its distribution functions. FP16 packs two cells per 32-bit word: half the GPU memory and bandwidth, so roughly 1.5–2× faster and allows the Max grid. FP32 is the reference precision (validation cases pass with both).',
   simSpeed: 'Multiplier on the automatically tuned number of solver steps per frame. Above 1× the flow develops faster but the frame rate drops; below 1× gives slow motion.',
   targetFps: 'Frame-rate the step tuner aims for. Lower targets leave more GPU time per frame for the solver, so the flow evolves faster on screen.',
   vehicle: 'Pick a procedural preset or your uploaded model. Sphere and cylinder are validation bodies placed mid-tunnel instead of on the floor.',
@@ -17,6 +18,8 @@ export const PANEL_TIPS: Record<string, string> = {
   reOn: 'Ignore the speed/viscosity mapping and set the simulated Reynolds number directly.',
   re: 'Simulated Reynolds number U·L/ν on the lattice. Low (≲200): laminar, steady or regular vortex shedding. High: turbulent wake handled by the LES model.',
   ground: 'Moving belt = rolling-road tunnel (floor moves with the air, no floor boundary layer). Fixed floor grows a boundary layer like a static tunnel. Free-slip is a frictionless symmetry plane.',
+  interp: 'Interpolated bounce-back (Bouzidi): the wall is placed at its true position between grid nodes, using the distance to the actual mesh surface, instead of halfway between voxels. Removes most of the staircase error on curved bodies.',
+  wheels: 'Preset vehicles: the tyres spin so their surface moves with the air/belt (ω = U/R), like a rolling-road tunnel. Only acts with the moving belt, in 3D. Uploaded models have no wheel information and keep stationary tyres with a still belt patch under them.',
   les: 'Strength of the Smagorinsky sub-grid turbulence model. It adds eddy viscosity where the flow is under-resolved and keeps high-Re runs stable. 0 = pure DNS (only safe at low Re).',
   sliceOn: 'Show the colour-mapped field on a plane through the tunnel.',
   field: 'Velocity magnitude; streamwise velocity (blue = reversed flow); pressure coefficient Cp (red = high pressure); vorticity (rotation); turbulence intensity (velocity fluctuations); Q-criterion (positive = vortex cores).',

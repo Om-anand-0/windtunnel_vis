@@ -3,7 +3,7 @@ import { RendererGPU } from '../render/RendererGPU';
 import type { RenderState } from '../render/renderState';
 import { SolverGPU } from '../solver/SolverGPU';
 import type { GridDims, SolverParams, SolverStats } from '../solver/types';
-import type { MeshData } from '../voxelize/mesh';
+import type { MeshData, WheelDef } from '../voxelize/mesh';
 import { VoxelInfo, VoxelizerGPU } from '../voxelize/VoxelizerGPU';
 import type { Backend, SolverFactory } from './types';
 
@@ -55,8 +55,8 @@ export class WebGPUBackend implements Backend {
     return this.solver?.n ?? 0;
   }
 
-  fits(d: GridDims): boolean {
-    const need = d.nx * d.ny * d.nz * (d.nz > 1 ? 19 : 9) * 4;
+  fits(d: GridDims, precision: 'f32' | 'f16' = 'f32'): boolean {
+    const need = d.nx * d.ny * d.nz * (d.nz > 1 ? 19 : 9) * (precision === 'f16' ? 2 : 4);
     return need <= this.gpu.maxBinding && need <= this.gpu.maxBuffer;
   }
 
@@ -77,8 +77,8 @@ export class WebGPUBackend implements Backend {
   clearStats() {
     this.solver?.clearStats();
   }
-  voxelize(mesh: MeshData | null, matrix: ArrayLike<number>): Promise<VoxelInfo> {
-    return this.vox.voxelize(this.solver!, mesh, matrix);
+  voxelize(mesh: MeshData | null, matrix: ArrayLike<number>, wheels: WheelDef[] = []): Promise<VoxelInfo> {
+    return this.vox.voxelize(this.solver!, mesh, matrix, wheels);
   }
   setMesh(mesh: MeshData | null) {
     this.renderer.setMesh(mesh);

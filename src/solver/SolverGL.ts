@@ -28,7 +28,15 @@ uniform sampler2D F0;
 uniform sampler2D F1;
 uniform sampler2D F2;
 uniform sampler2D FLAGS;
+uniform sampler2D SDF;
+uniform int interp;
 uniform ivec2 N;
+float linkQ(ivec2 a, ivec2 b) {
+  if (interp == 0) return 0.5;
+  float da = texelFetch(SDF, a, 0).r, db = texelFetch(SDF, b, 0).r;
+  if (da < 0.0 || db < 0.0 || da + db < 1e-6) return 0.5;
+  return clamp(da / (da + db), 0.01, 0.99);
+}
 float getF(int i, ivec2 p) {
   if (i < 4) return texelFetch(F0, p, 0)[i];
   if (i < 8) return texelFetch(F1, p, 0)[i - 4];
@@ -79,7 +87,18 @@ void main() {
     }
     if (sy >= N.y) { f[i] = getF(MY[i], ivec2(sx, iy)); continue; }
     ivec2 s = ivec2(sx, sy);
-    if (solid(s)) { wall = true; f[i] = loc[OPP[i]]; }
+    if (solid(s)) {
+      wall = true;
+      // interpolated bounce-back (Bouzidi)
+      float q = linkQ(p, s);
+      float fb = loc[OPP[i]];
+      float v = fb;
+      ivec2 a = p + c;
+      if (q < 0.5) {
+        if (a.x >= 0 && a.y >= 0 && a.x < N.x && a.y < N.y && !solid(a)) v = 2.0 * q * fb + (1.0 - 2.0 * q) * getF(OPP[i], a);
+      } else if (q > 0.5) v = (0.5 / q) * fb + (1.0 - 0.5 / q) * loc[i];
+      f[i] = v;
+    }
     else f[i] = getF(i, s);
   }
   float rho = 0.0, jx = 0.0, jy = 0.0, pxx = 0.0, pxy = 0.0, pyy = 0.0;
@@ -169,7 +188,15 @@ void main() {
   float ux = jx / rho, uy = jy / rho, uu = ux * ux + uy * uy;
   vec2 F = vec2(0.0);
   for (int i = 1; i < 9; i++) {
-    if (solid(p + C[i])) F += 2.0 * (f[i] - W[i]) * vec2(C[i]);
+    if (solid(p + C[i])) {
+      float q = linkQ(p, p + C[i]);
+      float fr = f[i];
+      ivec2 bk = p - C[i];
+      if (q < 0.5) {
+        if (bk.x >= 0 && bk.y >= 0 && bk.x < N.x && bk.y < N.y && !solid(bk)) fr = 2.0 * q * f[i] + (1.0 - 2.0 * q) * getF(i, bk);
+      } else if (q > 0.5) fr = (0.5 / q) * f[i] + (1.0 - 0.5 / q) * f[OPP[i]];
+      F += (f[i] + fr - 2.0 * W[i]) * vec2(C[i]);
+    }
   }
   bool bad = !(uu < 1.0e6) || !(rho > 0.0);
   vel = vec4(ux, uy, rho, 0.0);
@@ -304,6 +331,7 @@ export class SolverGL {
   private fboA: WebGLFramebuffer;
   private fboB: WebGLFramebuffer;
   flagsTex: GLTex;
+  private sdfTex: GLTex;
   velTex: GLTex;
   vortTex: GLTex;
   private statTex: GLTex;
@@ -348,6 +376,7 @@ export class SolverGL {
     this.fboA = mrt(this.fA);
     this.fboB = mrt(this.fB);
     this.flagsTex = makeTex(gl, nx, ny, gl.R8, gl.RED, gl.UNSIGNED_BYTE, false, new Uint8Array(this.n));
+    this.sdfTex = makeTex(gl, nx, ny, gl.R32F, gl.RED, gl.FLOAT, false, new Float32Array(this.n).fill(-1));
     this.velTex = makeTex(gl, nx, ny, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, true);
     this.vortTex = makeTex(gl, nx, ny, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, true);
     this.statTex = makeTex(gl, nx, ny, gl.RGBA32F, gl.RGBA, gl.FLOAT);
@@ -411,8 +440,15 @@ export class SolverGL {
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
   }
 
+  uploadSdf(d: Float32Array) {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.sdfTex.tex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.dims.nx, this.dims.ny, gl.RED, gl.FLOAT, d);
+  }
+
   private bindF(pass: FullscreenPass, src: GLTex[]) {
-    pass.tex('F0', 0, src[0].tex).tex('F1', 1, src[1].tex).tex('F2', 2, src[2].tex).tex('FLAGS', 3, this.flagsTex.tex).i2('N', this.dims.nx, this.dims.ny);
+    pass.tex('F0', 0, src[0].tex).tex('F1', 1, src[1].tex).tex('F2', 2, src[2].tex).tex('FLAGS', 3, this.flagsTex.tex).tex('SDF', 5, this.sdfTex.tex)
+      .i('interp', this.p.interp === false ? 0 : 1).i2('N', this.dims.nx, this.dims.ny);
   }
 
   private get cur(): GLTex[] {
@@ -568,7 +604,7 @@ export class SolverGL {
 
   destroy() {
     const gl = this.gl;
-    for (const t of [...this.fA, ...this.fB, this.flagsTex, this.velTex, this.vortTex, this.statTex, ...this.meanTex, ...this.reduceChain.map((r) => r.tex)]) gl.deleteTexture(t.tex);
+    for (const t of [...this.fA, ...this.fB, this.flagsTex, this.sdfTex, this.velTex, this.vortTex, this.statTex, ...this.meanTex, ...this.reduceChain.map((r) => r.tex)]) gl.deleteTexture(t.tex);
     for (const f of [this.fboA, this.fboB, ...this.macroFbo, this.vortFbo, ...this.reduceChain.map((r) => r.fbo)]) gl.deleteFramebuffer(f);
     gl.deleteBuffer(this.pbo);
     for (const p of [this.scPass, this.initPass, this.macroPass, this.derivedPass, this.reducePass]) gl.deleteProgram(p.prog);

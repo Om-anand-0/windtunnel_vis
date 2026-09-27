@@ -1,7 +1,7 @@
 import type { App } from '../app';
 import { formatRe } from '../analysis/units';
 import { COLORMAPS } from '../render/colormaps';
-import { FIELDS, GRID_2D, GRID_3D, Quality } from '../state';
+import { FIELDS, GRID_2D, GRID_3D, QUALITIES, Quality } from '../state';
 import { clearSaved } from '../persist';
 import { loadModelFile } from '../voxelize/loaders';
 import { PRESETS } from '../voxelize/presets';
@@ -30,7 +30,7 @@ export class Panel {
       onChange: (v) => app.setMode(v as '2d' | '3d'),
     });
     const qopts = (m: '2d' | '3d') =>
-      (['low', 'medium', 'high', 'ultra'] as Quality[]).map((q) => {
+      QUALITIES.map((q) => {
         const g = m === '3d' ? GRID_3D[q] : GRID_2D[q];
         return { value: q, label: `${q[0].toUpperCase() + q.slice(1)} · ${g.nx}×${g.ny}${g.nz > 1 ? '×' + g.nz : ''}` };
       });
@@ -44,6 +44,10 @@ export class Panel {
       },
     });
     (this.ctl.quality as any).refreshOptions = () => (this.ctl.quality as any).setOptions(qopts(s.mode));
+    this.ctl.precision = segmented(sim, {
+      label: 'Storage', options: [{ value: 'f16', label: 'FP16 (fast)' }, { value: 'f32', label: 'FP32' }], value: s.precision,
+      onChange: (v) => { s.precision = v as 'f16' | 'f32'; app.rebuildSolver(); },
+    });
     const [pb] = buttonRow(sim, [
       { label: 'Pause', onClick: () => { s.paused = !s.paused; this.sync(); }, title: 'Space' },
       { label: 'Step', onClick: () => app.step(), title: 'Advance one frame of steps (.)' },
@@ -142,6 +146,14 @@ export class Panel {
       ],
       value: s.ground,
       onChange: (v) => { s.ground = v as typeof s.ground; app.flowChanged(); },
+    });
+    this.ctl.interp = toggle(flow, {
+      label: 'Interpolated walls', value: s.interpWalls,
+      onChange: (v) => { s.interpWalls = v; app.flowChanged(); },
+    });
+    this.ctl.wheels = toggle(flow, {
+      label: 'Rotating wheels', value: s.rotatingWheels,
+      onChange: (v) => { s.rotatingWheels = v; app.revoxelize(); },
     });
     this.ctl.les = slider(flow, {
       label: 'Smagorinsky Cₛ', min: 0, max: 0.3, step: 0.01, value: s.lesCs, format: (v) => v.toFixed(2),
@@ -300,6 +312,8 @@ export class Panel {
     c.mode.set(s.mode);
     (c.quality as any).refreshOptions();
     c.quality.set(is3D ? s.quality3D : s.quality2D);
+    c.precision.set(s.precision);
+    c.precision.setVisible(this.app.backend.kind === 'webgpu');
     (c.vehicle as any).refreshOptions();
     c.vehicle.set(s.vehicle);
     this.pauseBtn.textContent = s.paused ? '▶ Run' : '❚❚ Pause';
@@ -325,6 +339,9 @@ export class Panel {
     c.reOn.set(s.reOverrideOn);
     c.re.setEnabled(s.reOverrideOn);
     c.ground.set(s.ground);
+    c.wheels.set(s.rotatingWheels);
+    c.interp.set(s.interpWalls);
+    c.wheels.setEnabled(is3D && !!this.app.mesh?.wheels?.length);
     c.les.set(s.lesCs);
     c.sliceOn.set(s.sliceOn);
     c.field.set(s.field);

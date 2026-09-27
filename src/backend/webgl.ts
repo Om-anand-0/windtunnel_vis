@@ -57,8 +57,9 @@ export class WebGLBackend implements Backend {
   }
   async voxelize(mesh: MeshData | null, matrix: ArrayLike<number>): Promise<VoxelInfo> {
     const s = this.solver!;
-    const { flags, info } = voxelizeCPU(mesh, matrix, s.dims);
+    const { flags, info, sdf } = voxelizeCPU(mesh, matrix, s.dims);
     s.uploadFlags(flags);
+    s.uploadSdf(sdf);
     return info;
   }
   setMesh(mesh: MeshData | null) {

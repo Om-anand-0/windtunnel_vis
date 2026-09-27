@@ -18,6 +18,10 @@ export interface SolverParams {
   spongeIn?: number;
   /** minimum relaxation time on wall-adjacent cells (crude wall model, damps wall modes) */
   tauWall?: number;
+  /** population storage: fp32, or fp16 (packed pairs: half memory/bandwidth). Fixed at construction. */
+  precision?: 'f32' | 'f16';
+  /** interpolated (Bouzidi) bounce-back on the body; false = plain halfway bounce-back */
+  interp?: boolean;
   /** 'regularized' (default) or plain 'bgk' */
   collision?: 'regularized' | 'bgk';
   /** EMA weight for time averages at this frame */

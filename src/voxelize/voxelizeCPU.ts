@@ -7,11 +7,35 @@ import type { VoxelInfo } from './VoxelizerGPU';
  * Same algorithm: signed ray crossings along x, y, z → winding numbers → 2-of-3 vote, plus a thin
  * surface shell for parts too thin to own an interior cell.
  */
-export function voxelizeCPU(mesh: MeshData | null, M: ArrayLike<number>, d: GridDims): { flags: Uint8Array; info: VoxelInfo } {
+/** Closest point on triangle abc to p (Ericson, Real-Time Collision Detection 5.1.5). */
+function closestPt(p: number[], a: number[], b: number[], c: number[]): number[] {
+  const sub = (u: number[], v: number[]) => [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
+  const dot = (u: number[], v: number[]) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+  const add = (u: number[], v: number[], k: number) => [u[0] + v[0] * k, u[1] + v[1] * k, u[2] + v[2] * k];
+  const ab = sub(b, a), ac = sub(c, a), ap = sub(p, a);
+  const d1 = dot(ab, ap), d2 = dot(ac, ap);
+  if (d1 <= 0 && d2 <= 0) return a;
+  const bp = sub(p, b), d3 = dot(ab, bp), d4 = dot(ac, bp);
+  if (d3 >= 0 && d4 <= d3) return b;
+  const vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) return add(a, ab, d1 / (d1 - d3));
+  const cp = sub(p, c), d5 = dot(ab, cp), d6 = dot(ac, cp);
+  if (d6 >= 0 && d5 <= d6) return c;
+  const vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) return add(a, ac, d2 / (d2 - d6));
+  const va = d3 * d6 - d5 * d4;
+  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) return add(b, sub(c, b), (d4 - d3) / (d4 - d3 + (d5 - d6)));
+  const den = 1 / (va + vb + vc);
+  return add(add(a, ab, vb * den), ac, vc * den);
+}
+
+export function voxelizeCPU(mesh: MeshData | null, M: ArrayLike<number>, d: GridDims): { flags: Uint8Array; info: VoxelInfo; sdf: Float32Array } {
   const { nx, ny, nz } = d;
   const n = nx * ny * nz;
   const flags = new Uint8Array(n);
-  if (!mesh || mesh.indices.length === 0) return { flags, info: { frontal: 0, solidCells: 0, min: [0, 0, 0], max: [0, 0, 0] } };
+  // distance of near-wall cell centres to the surface (cells), −1 = unknown; for interpolated bounce-back
+  const sdf = new Float32Array(n).fill(-1);
+  if (!mesh || mesh.indices.length === 0) return { flags, sdf, info: { frontal: 0, solidCells: 0, min: [0, 0, 0], max: [0, 0, 0] } };
   const dims = [nx, ny, nz];
   const cell = (x: number, y: number, z: number) => x + nx * (y + ny * z);
   const P = mesh.positions;
@@ -63,6 +87,41 @@ export function voxelizeCPU(mesh: MeshData | null, M: ArrayLike<number>, d: Grid
       }
     }
     // thin surface shell
+    // distances near the surface: sample the triangle and measure exact point–triangle distances
+    {
+      const a = p0.slice(), b = p1.slice(), c = p2.slice();
+      const m0 = Math.max(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]), Math.hypot(c[0] - a[0], c[1] - a[1], c[2] - a[2]), Math.hypot(c[0] - b[0], c[1] - b[1], c[2] - b[2]));
+      const st = Math.min(Math.max(Math.ceil(m0 / 0.7), 1), 256);
+      const R = 2;
+      for (let i = 0; i <= st; i++) {
+        for (let j = 0; j <= st - i; j++) {
+          const u = i / st, v = j / st;
+          const px = a[0] + (b[0] - a[0]) * u + (c[0] - a[0]) * v;
+          const py = a[1] + (b[1] - a[1]) * u + (c[1] - a[1]) * v;
+          const pz = a[2] + (b[2] - a[2]) * u + (c[2] - a[2]) * v;
+          if (nz === 1 && Math.abs(pz - 0.5) > 2.5) continue;
+          const bx = Math.floor(px), by = Math.floor(py), bz = Math.floor(pz);
+          for (let dz = nz === 1 ? 0 : -R; dz <= (nz === 1 ? 0 : R); dz++) {
+            const qz = nz === 1 ? 0 : bz + dz;
+            if (qz < 0 || qz >= nz) continue;
+            for (let dy = -R; dy <= R; dy++) {
+              const qy = by + dy;
+              if (qy < 0 || qy >= ny) continue;
+              for (let dx = -R; dx <= R; dx++) {
+                const qx = bx + dx;
+                if (qx < 0 || qx >= nx) continue;
+                const ctr = [qx + 0.5, qy + 0.5, qz + 0.5];
+                const cp = closestPt(ctr, a, b, c);
+                const dd = Math.hypot(ctr[0] - cp[0], ctr[1] - cp[1], ctr[2] - cp[2]);
+                if (dd > 2.5) continue;
+                const id = cell(qx, qy, qz);
+                if (sdf[id] < 0 || dd < sdf[id]) sdf[id] = dd;
+              }
+            }
+          }
+        }
+      }
+    }
     const e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
     const e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
     const cr = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
@@ -134,6 +193,7 @@ export function voxelizeCPU(mesh: MeshData | null, M: ArrayLike<number>, d: Grid
   const ok = solidCells > 0;
   return {
     flags,
+    sdf,
     info: { frontal, solidCells, min: ok ? (mn as [number, number, number]) : [0, 0, 0], max: ok ? (mx.map((v) => v + 1) as [number, number, number]) : [0, 0, 0] },
   };
 }

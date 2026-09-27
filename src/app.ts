@@ -8,7 +8,7 @@ import type { RenderState } from './render/renderState';
 import type { SolverStats } from './solver/types';
 import { csv, download, stamp, vtk } from './analysis/export';
 import { applyPartial, loadSaved, save, shareUrl } from './persist';
-import { defaultSettings, FIELDS, GRID_2D, GRID_3D, Quality, Settings } from './state';
+import { defaultSettings, FIELDS, GRID_2D, GRID_3D, QUALITIES, Quality, Settings } from './state';
 import { Capture } from './ui/capture';
 import { Hud } from './ui/hud';
 import { Panel } from './ui/panel';
@@ -17,12 +17,12 @@ import { maybeStartTour } from './ui/tour';
 import { ValidationPanel } from './ui/validationPanel';
 import { toast } from './ui/widgets';
 import { LoadedModel } from './voxelize/loaders';
-import { frontalAreaNormalized, MeshData, normalizeMesh, placementMatrix } from './voxelize/mesh';
+import { frontalAreaNormalized, gridWheels, MeshData, normalizeMesh, placementMatrix } from './voxelize/mesh';
 import { buildPreset, PRESETS } from './voxelize/presets';
 import type { VoxelInfo } from './voxelize/VoxelizerGPU';
 
 const V_MAX_KMH = 300;
-const QUALITY_ORDER: Quality[] = ['low', 'medium', 'high', 'ultra'];
+const QUALITY_ORDER: Quality[] = QUALITIES;
 
 export interface AeroReadout {
   cd: number;
@@ -162,6 +162,11 @@ export class App {
     return this.s.mode === '3d' ? GRID_3D[this.s.quality3D] : GRID_2D[this.s.quality2D];
   }
 
+  /** fp16 storage only on the WebGPU backend */
+  get precision(): 'f32' | 'f16' {
+    return this.backend.kind === 'webgpu' ? this.s.precision : 'f32';
+  }
+
   get is3D() {
     return this.s.mode === '3d';
   }
@@ -195,7 +200,7 @@ export class App {
   private fitQuality(): boolean {
     let changed = false;
     while (true) {
-      if (this.backend.fits(this.dims)) return changed;
+      if (this.backend.fits(this.dims, this.precision)) return changed;
       const key = this.is3D ? 'quality3D' : 'quality2D';
       const i = QUALITY_ORDER.indexOf(this.s[key]);
       if (i <= 0) return changed;
@@ -213,6 +218,7 @@ export class App {
     await this.backend.createSolver(d, {
       u: this.cur.U, nu: this.cur.nu, cs: this.s.lesCs, ground: this.s.ground, sides: 'freeslip',
       spongeNu: 0.04, spongeStart: 0.84, emaAlpha: 0.02, tauWall: 0.53, spongeIn: 0.03,
+      precision: this.precision, interp: this.s.interpWalls,
     });
     this.ready = true;
     this.rig.setDomain(d);
@@ -274,7 +280,8 @@ export class App {
     const center = pl.mode === 'center';
     // reference length: vehicle length or body diameter
     this.Lcells = center ? pl.diamFrac * d.ny : scale;
-    this.vinfo = await this.backend.voxelize(this.mesh, matrix.elements);
+    const wheels = this.s.rotatingWheels && this.is3D ? gridWheels(this.mesh, matrix) : [];
+    this.vinfo = await this.backend.voxelize(this.mesh, matrix.elements, wheels);
     // vortex cores are a few cells across, so Q·L²/U² there scales like L²: pick a matching default
     if (!this.isoThrUser) this.s.isoThr = Math.round(0.015 * this.Lcells * this.Lcells);
     const aN = frontalAreaNormalized(this.mesh, pl.yawDeg, pl.pitchDeg);
@@ -787,7 +794,7 @@ export class App {
     let ema = 1 - Math.exp(-Math.max(steps, 1) / avgTime);
     this.framesSinceReset++;
     ema = Math.max(ema, 1 / this.framesSinceReset);
-    this.backend.setParams({ u: this.cur.U, nu: this.cur.nu, cs: this.s.lesCs, ground: this.s.ground, emaAlpha: steps > 0 ? ema : 0 });
+    this.backend.setParams({ u: this.cur.U, nu: this.cur.nu, cs: this.s.lesCs, ground: this.s.ground, emaAlpha: steps > 0 ? ema : 0, interp: this.s.interpWalls });
     this.groundOffset += this.s.ground === 'moving' ? this.cur.U * steps : 0;
 
     const rs = this.buildRenderState(steps);

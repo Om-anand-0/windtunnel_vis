@@ -2,6 +2,9 @@ import type { SolverFactory } from '../backend/types';
 import { GridDims } from '../solver/types';
 import { coefficients } from './aero';
 import { crossingFrequency, cylinderStRef, sphereCdRef } from './strouhal';
+import { buildPreset } from '../voxelize/presets';
+import { placementMatrix } from '../voxelize/mesh';
+import { voxelizeCPU } from '../voxelize/voxelizeCPU';
 
 export interface Metric {
   label: string;
@@ -29,13 +32,16 @@ export interface ValidationCase {
 }
 
 /** Analytic obstacle flags for a circle (2D) or sphere (3D) — exact, no mesh involved. */
-function roundFlags(d: GridDims, c: [number, number, number], r: number, cylinder: boolean): { flags: Uint32Array; frontal: number } {
+function roundFlags(d: GridDims, c: [number, number, number], r: number, cylinder: boolean): { flags: Uint32Array; frontal: number; sdf: Float32Array } {
   const f = new Uint32Array(d.nx * d.ny * d.nz);
+  const sdf = new Float32Array(d.nx * d.ny * d.nz).fill(-1);
   const proj = new Uint8Array(d.ny * d.nz);
   for (let z = 0; z < d.nz; z++)
     for (let y = 0; y < d.ny; y++)
       for (let x = 0; x < d.nx; x++) {
         const dx = x + 0.5 - c[0], dy = y + 0.5 - c[1], dz = cylinder ? 0 : z + 0.5 - c[2];
+        const dist = Math.abs(Math.sqrt(dx * dx + dy * dy + dz * dz) - r);
+        if (dist < 2.5) sdf[x + d.nx * (y + d.ny * z)] = dist;
         if (dx * dx + dy * dy + dz * dz < r * r) {
           f[x + d.nx * (y + d.ny * z)] = 1;
           proj[y + d.ny * z] = 1;
@@ -43,7 +49,7 @@ function roundFlags(d: GridDims, c: [number, number, number], r: number, cylinde
       }
   let frontal = 0;
   for (const p of proj) frontal += p;
-  return { flags: f, frontal };
+  return { flags: f, frontal, sdf };
 }
 
 const nextFrame = () => new Promise((r) => setTimeout(r, 0));
@@ -94,8 +100,9 @@ export const CASES: ValidationCase[] = [
       const Re = 100;
       const nu = (U * D) / Re;
       const s = make(d, { u: U, nu, cs: 0, ground: 'freeslip', sides: 'freeslip', spongeNu: 0.03, spongeStart: 0.85, emaAlpha: 0.0 });
-      const { flags } = roundFlags(d, [6 * D, d.ny / 2 + 0.37, 0], D / 2, true);
+      const { flags, sdf } = roundFlags(d, [6 * D, d.ny / 2 + 0.37, 0], D / 2, true);
       s.uploadFlags(flags);
+      s.uploadSdf?.(sdf);
       const period = D / (0.17 * U);
       const total = Math.round(period * 16);
       const measureFrom = Math.round(period * 6);
@@ -141,8 +148,9 @@ export const CASES: ValidationCase[] = [
       const Re = 100;
       const nu = (U * D) / Re;
       const s = make(d, { u: U, nu, cs: 0, ground: 'freeslip', sides: 'freeslip', spongeNu: 0.03, spongeStart: 0.85, emaAlpha: 0 });
-      const { flags, frontal } = roundFlags(d, [2.8 * D, d.ny / 2 + 0.37, d.nz / 2 + 0.21], D / 2, false);
+      const { flags, frontal, sdf } = roundFlags(d, [2.8 * D, d.ny / 2 + 0.37, d.nz / 2 + 0.21], D / 2, false);
       s.uploadFlags(flags);
+      s.uploadSdf?.(sdf);
       const flowThrough = d.nx / U;
       const total = Math.round(flowThrough * 2.2);
       const measureFrom = Math.round(flowThrough * 1.4);
@@ -170,6 +178,54 @@ export const CASES: ValidationCase[] = [
           { label: 'deviation', value: isFinite(err) ? (err * 100).toFixed(1) + ' %' : '—' },
           { label: 'grid / τ', value: `${d.nx}×${d.ny}×${d.nz}, τ = ${(3 * nu + 0.5).toFixed(4)}` },
           { label: 'blockage', value: ((frontal / (d.ny * d.nz)) * 100).toFixed(1) + ' %' },
+        ],
+      };
+    },
+  },
+  {
+    id: 'ahmed',
+    name: 'Ahmed body, 25° slant (drag)',
+    description: 'D3Q19, L = 64 cells, fixed floor, Re_sim = 2·10⁴ with LES. The classic automotive reference body; experiment C_D = 0.285 at Re = 4.3·10⁶.',
+    needs3D: true,
+    async run(make, progress, abort) {
+      const t0 = performance.now();
+      const k = scaleParam;
+      const L = Math.round(64 * k);
+      const d = { nx: Math.round(3.5 * L), ny: Math.round(1.1 * L), nz: Math.round(1.5 * L) };
+      const U = 0.06;
+      const Re = 20000;
+      const nu = (U * L) / Re;
+      const s = make(d, { u: U, nu, cs: 0.14, ground: 'noslip', sides: 'freeslip', spongeNu: 0.04, spongeStart: 0.84, emaAlpha: 0, tauWall: 0.53, spongeIn: 0.03 });
+      const mesh = buildPreset('ahmed25');
+      const { matrix } = placementMatrix(mesh, d, { mode: 'ground', lengthFrac: L / d.nx, diamFrac: 0, xFrac: 0.33, yawDeg: 0, pitchDeg: 0, rideCells: 0 });
+      const { flags, info, sdf } = voxelizeCPU(mesh, matrix.elements, d);
+      s.uploadFlags(Uint32Array.from(flags));
+      s.uploadSdf?.(sdf);
+      const total = Math.round((6 * L) / U);
+      const measureFrom = Math.round((2.5 * L) / U);
+      const chunk = 50;
+      const tt: number[] = [], cds: number[] = [];
+      for (let step = 0; step < total; step += chunk) {
+        const st = await s.stepAndSample(chunk);
+        if (st.unstable) break;
+        tt.push(st.step);
+        cds.push(coefficients(st.fx, st.fy, st.fz, U, info.frontal).cd);
+        if ((step / chunk) % 4 === 0) { progress(step / total, `step ${step}/${total}`); await nextFrame(); }
+        if (abort()) break;
+      }
+      s.destroy();
+      const sel = cds.filter((_, i) => tt[i] >= measureFrom);
+      const cd = sel.reduce((a, b) => a + b, 0) / Math.max(sel.length, 1);
+      const ref = 0.285;
+      const err = (cd - ref) / ref;
+      return {
+        id: 'ahmed', name: this.name, passed: Math.abs(err) < 0.35, seconds: (performance.now() - t0) / 1000,
+        series: { t: tt, v: cds, label: 'C_D(t)' },
+        metrics: [
+          { label: 'mean C_D', value: isFinite(cd) ? cd.toFixed(3) : '—', expected: '0.285 ± 35 % (Ahmed 1984; Re_sim ≪ Re_exp)' },
+          { label: 'deviation', value: isFinite(err) ? (err * 100).toFixed(1) + ' %' : '—' },
+          { label: 'grid / τ', value: `${d.nx}×${d.ny}×${d.nz}, τ = ${(3 * nu + 0.5).toFixed(4)}` },
+          { label: 'blockage', value: ((info.frontal / (d.ny * d.nz)) * 100).toFixed(1) + ' %' },
         ],
       };
     },

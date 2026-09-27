@@ -12,9 +12,15 @@ and lift coefficients from momentum exchange on the body surface.
 * Upload any **.glb / .gltf / .obj / .stl**. It is voxelized **on the GPU**, auto-centred, scaled to ⅓ of the
   tunnel length and set on the floor. Procedural presets: sedan, sports car, SUV/van, truck + trailer,
   open-wheel racer, and a sphere and a cylinder for validation
-* Yaw (crosswind), pitch and ride height, a moving belt (rolling road), wind speed → Reynolds number
-* Built-in **validation suite**: von Kármán street behind a cylinder (Strouhal number), sphere drag,
-  free-stream uniformity
+* Yaw (crosswind), pitch and ride height, a moving belt (rolling road) with **rotating wheels**, wind
+  speed → Reynolds number
+* **Interpolated (Bouzidi) walls** from the true surface distance, and **FP16 population storage**
+  (half the memory and bandwidth)
+* Built-in **validation suite**: von Kármán street behind a cylinder (Strouhal number), sphere drag, the
+  **Ahmed reference body**, and free-stream uniformity. The same checks run headlessly in CI
+* **Studies**: pin results for A/B comparison and run automatic yaw, speed, ride-height or pitch sweeps
+* **Probes**, drag with a statistical error bar and a convergence badge, **CSV / VTK (ParaView) / PNG /
+  WebM / GIF export**, shareable links, remembered settings, and a first-run tour
 
 ## Run it
 
@@ -44,7 +50,7 @@ serves over HTTPS (which WebGPU requires) and redeploys automatically when you p
 
 ## Default settings
 
-The app opens in **3D on the High grid (256×128×128)** at a 45 fps target. That's tuned for laptop
+The app opens in **3D on the High grid (256×128×128) with FP16 storage** at a 45 fps target. That's tuned for laptop
 GPUs of the RTX 3070 Ti class. It shows 150k smoke particles with 20-frame trails, streamlines and a
 Q-criterion vortex iso-surface, and paints the time-averaged pressure (Cp) on the body. On a laptop,
 set your browser to *High performance* in Windows' graphics settings so it runs on the discrete GPU.
@@ -62,8 +68,13 @@ If 3D runs below about 12 fps, the grid is reduced automatically and eventually 
 | Pause, single step, reset | `Space`, `.`, `R` |
 | Screenshot | `P` (PNG with burned-in legend and numbers). "Record video" saves WebM |
 | Smoke rake / streamline seeds | drag the yellow handle in the viewport |
+| Probes | *Probes → Place probe*, then click on the slice. Traces appear in the right panel |
+| Compare / sweep | *Pin* (next to the C_D chart) or *Camera & export → Studies* |
+| Export | *Export CSV* (coefficients + probes), *Export flow field (.vtk)*, *Record GIF / video* |
+| Share | *Copy link* reproduces settings and camera. Settings are also remembered between visits |
+| Tour | `?` in the top bar |
 
-URL parameters: `?mode=2d|3d`, `?quality=low|medium|high|ultra`, `?vehicle=f1`, `?webgl`, plus any
+URL parameters: `?mode=2d|3d`, `?quality=low|medium|high|ultra|max`, `?vehicle=f1`, `?webgl`, plus any
 setting as `?s.<name>=<value>`, e.g. `?mode=3d&s.isoOn=1&s.field=3`. The names are listed in
 [`src/state.ts`](src/state.ts), so a URL can capture a view to share.
 
@@ -101,7 +112,19 @@ excites an odd–even mode at bounce-back walls (found and fixed while testing, 
 | outlet | zero-gradient, plus a viscous sponge over the last 16 % of the tunnel |
 | roof, side walls | free slip (specular reflection) |
 | floor | free slip, no-slip (halfway bounce-back), or **moving belt**: bounce-back with wall momentum `+6 wᵢ ρ (cᵢ·u_w)` |
-| vehicle | halfway bounce-back on the voxelized body |
+| vehicle | **interpolated bounce-back** (Bouzidi): the wall sits at its true position between nodes, from the exact point–triangle distance computed by the voxelizer |
+| wheels (presets) | moving-wall bounce-back with the tyre's surface velocity ω×r, ω = U/R, so the contact patch moves with the belt |
+
+With interpolated walls, a population crossing a boundary link with wall fraction q (distance from the
+fluid node to the wall divided by the link length) reflects as
+`f_ī = 2q f_i* + (1−2q) f_i*(x−c_i)` for q < ½, and `f_ī = f_i*/(2q) + (1 − 1/(2q)) f_ī*` for q ≥ ½.
+The momentum-exchange force uses the same reflected value, so force and flow stay consistent.
+
+**Storage.** Populations can be stored in FP16 as deviations from the lattice weights, `fᵢ − wᵢ`, with
+two neighbouring cells packed into one 32-bit word via `pack2x16float`. Every thread updates a pair of
+cells, so stores are full words. This halves memory and memory bandwidth, and LBM is bandwidth-bound.
+The deviations are small, so FP16's roughly 3 significant digits are enough: the validation cases pass
+in both precisions (see below).
 
 **Forces.** The force on the body comes from **momentum exchange** across every fluid→solid link:
 `F = Σ 2 (fᵢ* − wᵢρ₀) cᵢ`. Subtracting the reference state removes the absolute lattice pressure
@@ -162,13 +185,13 @@ C_D ≈ 0.5–0.8 on the moving belt and 0.45–0.65 on a fixed floor.
   wall-resolved CFD. C_D values are **qualitative/comparative** and typically read high (for example
   0.5–0.8 for a sedan at the Medium grid, against about 0.3 on the road). Relative changes, such as
   yaw, ride height or shape, are more meaningful than absolute values.
-* **Staircase geometry.** Halfway bounce-back on voxels gives first-order geometric accuracy. Curved
-  surfaces are stair-stepped, which adds a few percent of drag error at D ≈ 20.
+* **Geometry.** Interpolated walls remove most of the staircase error, but features thinner than a cell
+  are still represented by a one-cell shell, and the solid/fluid classification is voxel-based.
 * **Compressibility.** LBM is weakly compressible. Pressure waves exist, and errors scale with Ma². The
   impulsive start is damped (extra viscosity for about one convective time, plus absorbing inlet and
   outlet layers), and the first convective time is left out of the C_D average.
-* **Wheels do not rotate.** On the moving belt a small patch of belt around each tyre contact is held
-  still. Without that, the belt would ram stagnant fluid into the tyres and add a large spurious drag.
+* **Wheels.** Preset tyres rotate. Uploaded models carry no wheel information, so their tyres are
+  stationary and a small patch of belt around each contact is held still. Without that, the belt would ram stagnant fluid into the tyres and add a large spurious drag.
 * **2D is a centre-plane slice.** It has no wheels (they are off-plane), no 3D relief, and about 26 %
   blockage because the car height fills a quarter of the tunnel. That makes 2D C_D and C_L much larger
   than real values. Treat them as trends.
@@ -177,7 +200,19 @@ C_D ≈ 0.5–0.8 on the moving belt and 0.45–0.65 on a fixed floor.
 * **Meshes.** The voxelizer tolerates holes (2-of-3 vote) and overlapping parts (winding numbers).
   Inside-out or badly broken meshes can still fail. Draco-compressed glTF and external `.bin` files are
   not supported, so use a self-contained `.glb`.
-* **Precision.** Field textures for rendering are half precision. The solver itself runs in fp32.
+* **Precision.** In FP16 mode the populations are half precision, as are the field textures used for
+  rendering. Arithmetic is always FP32. Switch *Storage* to FP32 for reference runs.
+
+## Tests and CI
+
+```bash
+npm test               # headless: free stream, voxelizer volumes, cylinder Strouhal (~2 min)
+npm test -- --full     # also the sphere drag case
+npm test -- "--case=car&vehicle=f1&dims=256,96,1&steps=2000&prec=f16"   # any harness query
+```
+
+The tests run the real WGSL kernels in headless Chromium on SwiftShader's software WebGPU.
+`.github/workflows/ci.yml` runs type-check, build and `npm test` on every push and pull request.
 
 ## Architecture
 

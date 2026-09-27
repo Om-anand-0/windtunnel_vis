@@ -10,8 +10,37 @@ struct Params {
   ground: u32, strideX: u32, spongeStart: f32, spongeNu: f32,
   uGround: f32, emaAlpha: f32, uRef: f32, refX: u32,
   sideMode: u32, collision: u32, tauWall: f32, pad2: u32,
-  spongeIn: f32, contactH: f32, pad4: f32, pad5: f32,
+  spongeIn: f32, contactH: f32, interp: u32, strideP: u32,
 };
+`;
+
+/** Rotating wheels: w[2k] = (centre, 1/R), w[2k+1] = (unit axis, half-width). Cells tagged k+1 in flags bits 8‥15. */
+export const WHEELS_WGSL = /* wgsl */ `
+struct Wheels { count: u32, p0: u32, p1: u32, p2: u32, w: array<vec4<f32>, 32> };
+`;
+const WHEEL_FN = /* wgsl */ `
+fn wheelVel(k: u32, p: vec3<f32>) -> vec3<f32> {
+  let a = WH.w[2u * k];
+  let b = WH.w[2u * k + 1u];
+  // surface speed ω·R = U: the contact patch moves with the belt (uGround is 0 unless the belt runs)
+  return P.uGround * a.w * cross(b.xyz, p - a.xyz);
+}
+`;
+
+/** Wall-link fraction q from the stored distances (0 = unknown → q = ½, plain bounce-back). */
+const SDF_FN = /* wgsl */ `
+fn sdfAt(id: u32) -> f32 {
+  let s = sdf[id];
+  if (s == 0u) { return -1.0; }
+  return bitcast<f32>(~s);
+}
+fn linkQ(fluid: u32, solid: u32) -> f32 {
+  if (P.interp == 0u) { return 0.5; }
+  let a = sdfAt(fluid);
+  let b = sdfAt(solid);
+  if (a < 0.0 || b < 0.0 || a + b < 1e-6) { return 0.5; }
+  return clamp(a / (a + b), 0.01, 0.99);
+}
 `;
 
 export const DIRNAMES = ['x', 'y', 'z'];
@@ -26,7 +55,83 @@ export const DIRNAMES = ['x', 'y', 'z'];
  *  - x−cᵢ above the roof / sides  → specular reflection (free slip)
  *  - x−cᵢ inside the vehicle      → halfway bounce-back
  */
-export function streamCollideWGSL(L: Lattice, wg: number): string {
+export function streamCollideWGSL(L: Lattice, wg: number, packed = false): string {
+  return packed ? packKernel(L, streamCollideBody(L), wg) : streamCollideF32(L, streamCollideBody(L), wg);
+}
+
+/**
+ * FP16 storage: populations are stored as (f − wᵢ) in half precision, two neighbouring cells (x even,
+ * x+1) per u32 word: word(i, pair) = pack2x16float(cell 2·pair, cell 2·pair+1). Each thread updates one
+ * pair so every store is a full word. Loads unpack the needed half. Halves memory and bandwidth.
+ */
+function ldFn(L: Lattice): string {
+  return /* wgsl */ `
+var<private> WREST: array<f32, ${L.q}> = array<f32, ${L.q}>(${L.w.map(fl).join(', ')});
+fn ld(k: u32, c: u32) -> f32 {
+  let v = unpack2x16float(fin[k * (P.n >> 1u) + (c >> 1u)]);
+  return select(v.x, v.y, (c & 1u) == 1u) + WREST[k];
+}
+`;
+}
+
+/** Rewrite direct population loads fin[k * N + c] into ld(k, c). */
+function packLoads(code: string): string {
+  return code
+    .replace(/fin\[idx\]/g, 'ld(0u, idx)')
+    .replace(/fin\[([^\]]*?) \* N \+ ([^\]]+)\]/g, 'ld($1, $2)')
+    .replace('var<storage, read> fin: array<f32>;', 'var<storage, read> fin: array<u32>;');
+}
+
+function streamCollideF32(L: Lattice, body: { decls: string; head: string; solid: string; main: string }, wg: number): string {
+  return /* wgsl */ `
+${body.decls}
+@compute @workgroup_size(${wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x + gid.y * P.strideX;
+  let N = P.n;
+  if (idx >= N) { return; }
+  NX = i32(P.nx); NY = i32(P.ny); NZ = i32(P.nz);
+${body.head}
+  if (flags[idx] != 0u) {
+${Array.from({ length: L.q }, (_, i) => `    fout[${i}u * N + idx] = ${fl(L.w[i])};`).join('\n')}
+    return;
+  }
+${body.main.replace(/OUT\((\d+)\) = /g, (_m, i) => `fout[${i}u * N + idx] = `)}
+}
+`;
+}
+
+function packKernel(L: Lattice, body: { decls: string; head: string; solid: string; main: string }, wg: number): string {
+  const q = L.q;
+  const code = /* wgsl */ `
+${body.decls.replace('var<storage, read_write> fout: array<f32>;', 'var<storage, read_write> fout: array<u32>;')}
+${ldFn(L)}
+fn update(idx: u32) -> array<f32, ${q}> {
+  let N = P.n;
+${body.head}
+  var res: array<f32, ${q}>;
+  if (flags[idx] != 0u) {
+    return array<f32, ${q}>(${L.w.map(fl).join(', ')});
+  }
+${body.main.replace(/OUT\((\d+)\) = /g, (_m, i) => `res[${i}] = `)}
+  return res;
+}
+
+@compute @workgroup_size(${wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let pair = gid.x + gid.y * P.strideP;
+  let NW = P.n >> 1u;
+  if (pair >= NW) { return; }
+  NX = i32(P.nx); NY = i32(P.ny); NZ = i32(P.nz);
+  let a = update(2u * pair);
+  let b = update(2u * pair + 1u);
+${Array.from({ length: q }, (_, i) => `  fout[${i}u * NW + pair] = pack2x16float(vec2<f32>(a[${i}] - ${fl(L.w[i])}, b[${i}] - ${fl(L.w[i])}));`).join('\n')}
+}
+`;
+  return packLoads(code);
+}
+
+function streamCollideBody(L: Lattice): { decls: string; head: string; solid: string; main: string } {
   const { c, w, q, opp, mirrorY, mirrorZ, mirrorYZ, dim } = L;
   const pairs = tensorPairs(dim);
   const comp = ['x', 'y', 'z'];
@@ -64,7 +169,7 @@ export function streamCollideWGSL(L: Lattice, wg: number): string {
     if (dim === 3) {
       s += ` else if (zOut) {\n        if (P.sideMode == 1u) {\n          f${i} = fin[${i}u * N + cellId(sxc, sy, (sz + NZ) % NZ)];\n        } else {\n          f${i} = fin[${mirrorZ[i]}u * N + cellId(sxc, sy, iz)];\n        }\n      }`;
     }
-    s += ` else {\n        let sc = cellId(sxc, sy, sz);\n        if (flags[sc] != 0u) { wall = true; f${i} = fin[${opp[i]}u * N + idx]; } else { f${i} = fin[${i}u * N + sc]; }\n      }\n`;
+    s += ` else {\n        let sc = cellId(sxc, sy, sz);\n        let fs = flags[sc];\n        if (fs != 0u) {\n          wall = true;\n          // interpolated bounce-back (Bouzidi): q = fraction of the link from this node to the wall\n          let fb = fin[${opp[i]}u * N + idx];\n          var q = linkQ(idx, sc);\n          var v = fb;\n          if (q < 0.5) {\n            let ax = ix + ${cx}; let ay = iy + ${cy}; let az = ${dim === 3 ? `iz + ${cz}` : '0'};\n            if (ax >= 0 && ay >= 0 && az >= 0 && ax < NX && ay < NY && az < NZ && flags[cellId(ax, ay, az)] == 0u) {\n              v = 2.0 * q * fb + (1.0 - 2.0 * q) * fin[${opp[i]}u * N + cellId(ax, ay, az)];\n            } else { q = 0.5; }\n          } else if (q > 0.5) {\n            v = (0.5 / q) * fb + (1.0 - 0.5 / q) * fin[${i}u * N + idx];\n          }\n          f${i} = v;\n          if ((fs >> 8u) != 0u) {\n            let uw = wheelVel((fs >> 8u) - 1u, 0.5 * vec3<f32>(f32(ix + sxc), f32(iy + sy), f32(iz + sz)) + vec3<f32>(0.5));\n            let mv = ${fl(6 * w[i])} * dot(vec3<f32>(${cx}.0, ${cy}.0, ${cz}.0), uw) * select(1.0, 0.5 / q, q > 0.5);\n            f${i} += mv; mvSum += mv; mvW += ${fl(w[i])}; wm |= ${1 << i}u;\n          }\n        } else { f${i} = fin[${i}u * N + sc]; }\n      }\n`;
     s += `    }\n  }\n`;
     pull += s;
   }
@@ -131,15 +236,20 @@ export function streamCollideWGSL(L: Lattice, wg: number): string {
     collide += `    var fo${i} = feq + select(fr${i}, (1.0 - 1.0 / tau) * (f${i} - feq), useBGK);\n`;
     const cxi2 = c[i][0];
     collide += `    if (sIn > 0.0) { fo${i} = mix(fo${i}, ${fl(w[i])} * (1.0 + ${fl(3 * cxi2)} * U + ${fl(4.5 * cxi2 * cxi2)} * U * U - 1.5 * U * U), sIn); }\n`;
-    collide += `    fout[${i}u * N + idx] = fo${i};\n  }\n`;
+    collide += `    OUT(${i}) = fo${i};\n  }\n`;
   }
 
-  return /* wgsl */ `
+  const decls = /* wgsl */ `
 ${PARAMS_WGSL}
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read> fin: array<f32>;
 @group(0) @binding(2) var<storage, read_write> fout: array<f32>;
 @group(0) @binding(3) var<storage, read> flags: array<u32>;
+${WHEELS_WGSL}
+@group(0) @binding(4) var<uniform> WH: Wheels;
+@group(0) @binding(5) var<storage, read> sdf: array<u32>;
+${WHEEL_FN}
+${SDF_FN}
 
 var<private> NX: i32;
 var<private> NY: i32;
@@ -148,19 +258,19 @@ var<private> NZ: i32;
 fn cellId(x: i32, y: i32, z: i32) -> u32 {
   return u32(x + NX * (y + NY * z));
 }
-
-@compute @workgroup_size(${wg})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let idx = gid.x + gid.y * P.strideX;
-  let N = P.n;
-  if (idx >= N) { return; }
-  NX = i32(P.nx); NY = i32(P.ny); NZ = i32(P.nz);
+`;
+  const head = /* wgsl */ `
   let ix = i32(idx % P.nx);
   let iy = i32((idx / P.nx) % P.ny);
   let iz = i32(idx / (P.nx * P.ny));
   let U = P.uin;
   var wall = false;
   var gwall = false;
+  // rotating wheels: per-cell sum of the moving-wall terms; its net (mass) part is removed after the
+  // pull so a curved moving wall on a voxel staircase injects tangential momentum but no mass
+  var mvSum = 0.0;
+  var mvW = 0.0;
+  var wm = 0u;
   // tyre contact patches: the belt is held still within a small radius of the body, otherwise it
   // drags the stagnant fluid of the tyre/belt wedge straight into the (non-rotating) tyres
   var belt = select(0.0, 1.0, P.ground == 2u);
@@ -170,24 +280,44 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       for (var dx = -r; dx <= r; dx++) {
         for (var dy = 0; dy <= 1; dy++) {
           let qx = ix + dx; let qz = iz + dz;
-          if (qx >= 0 && qx < NX && qz >= 0 && qz < NZ && flags[cellId(qx, dy, qz)] != 0u) { belt = 0.0; }
+          if (qx >= 0 && qx < NX && qz >= 0 && qz < NZ && flags[cellId(qx, dy, qz)] != 0u && (flags[cellId(qx, dy, qz)] >> 8u) == 0u) { belt = 0.0; }
         }
       }
     }
   }
-  if (flags[idx] != 0u) {
-${Array.from({ length: q }, (_, i) => `    fout[${i}u * N + idx] = ${fl(w[i])};`).join('\n')}
-    return;
-  }
-${pull}
-${collide}
-}
 `;
+  let massFix = `  if (mvW > 0.0) {\n    let corr = mvSum / mvW;\n`;
+  for (let i = 1; i < q; i++) massFix += `    if ((wm & ${1 << i}u) != 0u) { f${i} -= ${fl(w[i])} * corr; }\n`;
+  massFix += `  }\n`;
+  return { decls, head, solid: '', main: pull + massFix + collide };
 }
 
 /** Initialise all populations to equilibrium at (ρ=1, u=(u0,0,0)). */
-export function initWGSL(L: Lattice, wg: number): string {
+export function initWGSL(L: Lattice, wg: number, packed = false): string {
   const { c, w, q } = L;
+  if (packed) {
+    let pk = '';
+    for (let i = 0; i < q; i++) {
+      const cx = c[i][0];
+      const eq = (u: string) => `${fl(w[i])} * (${fl(3 * cx)} * ${u} + ${fl(4.5 * cx * cx)} * ${u} * ${u} - 1.5 * ${u} * ${u})`;
+      pk += `  fout[${i}u * NW + pair] = pack2x16float(vec2<f32>(${eq('ua')}, ${eq('ub')}));\n`;
+    }
+    return /* wgsl */ `
+${PARAMS_WGSL}
+@group(0) @binding(0) var<uniform> P: Params;
+@group(0) @binding(2) var<storage, read_write> fout: array<u32>;
+@group(0) @binding(3) var<storage, read> flags: array<u32>;
+@compute @workgroup_size(${wg})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let pair = gid.x + gid.y * P.strideP;
+  let NW = P.n >> 1u;
+  if (pair >= NW) { return; }
+  let ua = select(P.uin, 0.0, flags[2u * pair] != 0u);
+  let ub = select(P.uin, 0.0, flags[2u * pair + 1u] != 0u);
+${pk}
+}
+`;
+  }
   let body = '';
   for (let i = 0; i < q; i++) {
     const cx = c[i][0];
@@ -214,7 +344,13 @@ ${body}
  * Macroscopic pass: ρ, u → vel texture, EMA statistics, momentum-exchange force on vehicle links,
  * and per-workgroup partial reductions (Fx, Fy, Fz, max|u|²) and (Σρ_ref, n_ref, nan, solidCount).
  */
-export function macroWGSL(L: Lattice, wg: number): string {
+export function macroWGSL(L: Lattice, wg: number, packed = false): string {
+  const code = macroF32(L, wg);
+  if (!packed) return code;
+  return packLoads(code.replace('@group(0) @binding(2) var<storage, read> flags: array<u32>;', '@group(0) @binding(2) var<storage, read> flags: array<u32>;\n' + ldFn(L)));
+}
+
+function macroF32(L: Lattice, wg: number): string {
   const { c, q, dim } = L;
   const fs = Array.from({ length: q }, (_, i) => `f[${i}]`);
   const sum = (coef: (i: number) => number) =>
@@ -235,10 +371,24 @@ export function macroWGSL(L: Lattice, wg: number): string {
   for (let i = 1; i < q; i++) {
     const [cx, cy, cz] = c[i];
     const nb = `cellIdSafe(ix + ${cx}, iy + ${cy}, iz + ${cz})`;
-    const fv = [cx, cy, cz]
-      .map((v, a) => (v === 0 ? '' : `F.${'xyz'[a]} += ${fl(2 * v)} * (f[${i}] - ${fl(L.w[i])});`))
-      .join(' ');
-    force += `    if (isSolid(${nb})) { ${fv} }\n`;
+    // moving (wheel) wall: the reflected population carries −6wᵢ(cᵢ·u_w), so F = cᵢ(2fᵢ* − 6wᵢ cᵢ·u_w)
+    // interpolated bounce-back: the reflected population is the same Bouzidi combination the next
+    // streaming step will build, so F = cᵢ (fᵢ* + f_ī^new) stays consistent with the dynamics
+    const oi = L.opp[i];
+    force += `    { let s = ${nb}; if (isSolid(s)) {
+      var q = linkQ(idx, s);
+      var fr = f[${i}];
+      if (q < 0.5) {
+        let bk = cellIdSafe(ix - ${cx}, iy - ${cy}, iz - ${cz});
+        if (bk != 0xffffffffu && flags[bk] == 0u) { fr = 2.0 * q * f[${i}] + (1.0 - 2.0 * q) * fin[${i}u * N + bk]; } else { q = 0.5; }
+      } else if (q > 0.5) { fr = (0.5 / q) * f[${i}] + (1.0 - 0.5 / q) * f[${oi}]; }
+      let tg = flags[s] >> 8u;
+      if (tg != 0u) {
+        let mv = -${fl(6 * L.w[i])} * select(1.0, 0.5 / q, q > 0.5) * dot(vec3<f32>(${cx}.0, ${cy}.0, ${cz}.0), wheelVel(tg - 1u, vec3<f32>(f32(ix) + ${fl(0.5 + cx / 2)}, f32(iy) + ${fl(0.5 + cy / 2)}, f32(iz) + ${fl(0.5 + cz / 2)})));
+        fr += mv; mvSum += mv; mvW += ${fl(L.w[i])}; Cw += vec3<f32>(${cx}.0, ${cy}.0, ${cz}.0) * ${fl(L.w[i])};
+      }
+      F += vec3<f32>(${cx}.0, ${cy}.0, ${cz}.0) * (f[${i}] + fr - ${fl(2 * L.w[i])});
+    } }\n`;
   }
   let solidRho = '';
   const nbs = dim === 3 ? [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]] : [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]];
@@ -254,6 +404,11 @@ ${PARAMS_WGSL}
 @group(0) @binding(4) var<storage, read_write> meanA: array<vec4<f32>>;
 @group(0) @binding(5) var<storage, read_write> meanB: array<f32>;
 @group(0) @binding(6) var<storage, read_write> partials: array<vec4<f32>>;
+${WHEELS_WGSL}
+@group(0) @binding(7) var<uniform> WH: Wheels;
+@group(0) @binding(8) var<storage, read> sdf: array<u32>;
+${WHEEL_FN}
+${SDF_FN}
 
 var<private> NX: i32;
 var<private> NY: i32;
@@ -289,7 +444,10 @@ ${loads}
       let u = vec3<f32>(${[0, 1, 2].map((a) => (a < dim ? `(${sum((i) => c[i][a])}) / rho` : '0.0')).join(', ')});
       out = vec4<f32>(u, rho);
       var F = vec3<f32>(0.0);
+      var mvSum = 0.0; var mvW = 0.0; var Cw = vec3<f32>(0.0);
 ${force}
+      // same mass-free correction as the streaming step
+      if (mvW > 0.0) { F -= Cw * (mvSum / mvW); }
       let uu = dot(u, u);
       let bad = select(0.0, 1.0, !(uu < 1.0e6) || !(rho > 0.0));
       A = vec4<f32>(F, select(uu, 1.0e6, bad > 0.0));

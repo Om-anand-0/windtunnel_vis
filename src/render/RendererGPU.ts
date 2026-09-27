@@ -1,6 +1,6 @@
 import type { SolverGPU } from '../solver/SolverGPU';
 import type { MeshData } from '../voxelize/mesh';
-import { PARTICLES_WGSL, PROBES_WGSL, STREAMLINES_WGSL } from './tracers';
+import { BRICKS_WGSL, PARTICLES_WGSL, PROBES_WGSL, STREAMLINES_WGSL } from './tracers';
 import { GROUND_WGSL, MESH_WGSL, SEGMENTS_WGSL, SLICE_WGSL, STREAM_WGSL, TRAILS_WGSL, VOLUME_WGSL } from './wgslRender';
 import type { RenderState } from './renderState';
 
@@ -51,11 +51,16 @@ export class RendererGPU {
   private sliceU: GPUBuffer;
   private sliceBG: GPUBindGroup;
   private volU: GPUBuffer;
-  private volBG: GPUBindGroup;
+  private volBG: GPUBindGroup | null = null;
   private groundU: GPUBuffer;
   private groundBG: GPUBindGroup;
   private segBuf: GPUBuffer;
   private probePipe: GPUComputePipeline;
+  private brickPipe: GPUComputePipeline;
+  private brickLayout: GPUBindGroupLayout;
+  private volLayout: GPUBindGroupLayout;
+  private brickTex: GPUTexture | null = null;
+  private brickBG: GPUBindGroup | null = null;
   private probeU: GPUBuffer;
   private probeOut: GPUBuffer;
   private probeBG: GPUBindGroup;
@@ -139,7 +144,6 @@ export class RendererGPU {
     this.sliceU = uni(48);
     this.sliceBG = device.createBindGroup({ layout: this.layouts.uni, entries: [{ binding: 0, resource: { buffer: this.sliceU } }] });
     this.volU = uni(32);
-    this.volBG = device.createBindGroup({ layout: this.layouts.uni, entries: [{ binding: 0, resource: { buffer: this.volU } }] });
     this.groundU = uni(32);
     this.groundBG = device.createBindGroup({ layout: this.layouts.uni, entries: [{ binding: 0, resource: { buffer: this.groundU } }] });
     this.segBuf = device.createBuffer({ size: 48 * 128, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
@@ -155,6 +159,16 @@ export class RendererGPU {
       layout: device.createPipelineLayout({ bindGroupLayouts: [this.frameLayout, probeLayout] }),
       compute: { module: device.createShaderModule({ code: PROBES_WGSL, label: 'probes' }), entryPoint: 'main' },
     });
+    this.brickLayout = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float', viewDimension: '3d' } }] });
+    this.brickPipe = device.createComputePipeline({
+      label: 'bricks',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.frameLayout, this.brickLayout] }),
+      compute: { module: device.createShaderModule({ code: BRICKS_WGSL, label: 'bricks' }), entryPoint: 'main' },
+    });
+    this.volLayout = device.createBindGroupLayout({ entries: [
+      { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float', viewDimension: '3d' } },
+    ] });
     this.probeBG = device.createBindGroup({ layout: probeLayout, entries: [{ binding: 0, resource: { buffer: this.probeU } }, { binding: 1, resource: { buffer: this.probeOut } }] });
     this.segBG = device.createBindGroup({ layout: this.layouts.seg, entries: [{ binding: 0, resource: { buffer: this.segBuf } }] });
 
@@ -226,6 +240,12 @@ export class RendererGPU {
       ],
     });
     this.needFill = true;
+    // brick grid for empty-space skipping (3D only)
+    this.brickTex?.destroy();
+    const bd = [Math.ceil(solver.dims.nx / 4), Math.ceil(solver.dims.ny / 4), Math.ceil(solver.dims.nz / 4)];
+    this.brickTex = this.device.createTexture({ size: bd, dimension: '3d', format: 'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+    this.brickBG = this.device.createBindGroup({ layout: this.brickLayout, entries: [{ binding: 0, resource: this.brickTex.createView() }] });
+    this.volBG = this.device.createBindGroup({ layout: this.volLayout, entries: [{ binding: 0, resource: { buffer: this.volU } }, { binding: 1, resource: this.brickTex.createView() }] });
   }
 
   setMesh(mesh: MeshData | null) {
@@ -460,6 +480,16 @@ export class RendererGPU {
       this.probeData = [];
     }
 
+    if (s.volume.visible && !is2D && this.brickBG) {
+      const cp = enc.beginComputePass({ label: 'bricks' });
+      cp.setPipeline(this.brickPipe);
+      cp.setBindGroup(0, this.frameBG);
+      cp.setBindGroup(1, this.brickBG);
+      const bt = this.brickTex!;
+      cp.dispatchWorkgroups(Math.ceil(bt.width / 4), Math.ceil(bt.height / 4), Math.ceil(bt.depthOrArrayLayers / 4));
+      cp.end();
+    }
+
     // ---- uniforms for drawing
     // mesh
     const mu = new ArrayBuffer(160);
@@ -579,8 +609,8 @@ export class RendererGPU {
 
     // vortex / recirculation iso-surface
     if (s.volume.visible && !is2D && !SKIP.has('volume')) {
-      pass.setPipeline(this.pipeline('volume', () => this.basicPipe('volume', VOLUME_WGSL, this.layouts.uni, { blend: 'premul', depthWrite: true })));
-      pass.setBindGroup(1, this.volBG);
+      pass.setPipeline(this.pipeline('volume', () => this.basicPipe('volume', VOLUME_WGSL, this.volLayout, { blend: 'premul', depthWrite: true })));
+      pass.setBindGroup(1, this.volBG!);
       pass.draw(3);
     }
 

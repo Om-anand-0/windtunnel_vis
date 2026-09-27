@@ -18,6 +18,8 @@ export class SolverGPU {
   readonly fA: GPUBuffer;
   readonly fB: GPUBuffer;
   readonly flags: GPUBuffer;
+  /** distance-to-surface near walls (encoded, see wgslVoxel.sdfWGSL) for interpolated bounce-back */
+  readonly sdf: GPUBuffer;
   readonly meanA: GPUBuffer;
   readonly meanB: GPUBuffer;
   readonly velTex: GPUTexture;
@@ -26,6 +28,7 @@ export class SolverGPU {
   readonly meanTex: GPUTexture;
 
   private params: GPUBuffer;
+  private wheels: GPUBuffer;
   private partials: GPUBuffer;
   private result: GPUBuffer;
   private reduceParams: GPUBuffer;
@@ -51,6 +54,10 @@ export class SolverGPU {
   private p: SolverParams;
   private pendingInit = false;
 
+  /** populations stored as packed FP16 pairs (half the memory and bandwidth) */
+  readonly packed: boolean;
+  private dispP: { x: number; y: number; strideX: number };
+
   constructor(readonly device: GPUDevice, dims: GridDims, params: SolverParams) {
     this.dims = dims;
     this.is3D = dims.nz > 1;
@@ -59,14 +66,18 @@ export class SolverGPU {
     this.p = { ...params };
     const q = this.lattice.q;
     const S = GPUBufferUsage.STORAGE;
-    const fBytes = q * this.n * 4;
+    this.packed = params.precision === 'f16' && dims.nx % 2 === 0;
+    const fBytes = q * this.n * (this.packed ? 2 : 4);
     this.fA = device.createBuffer({ size: fBytes, usage: S | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST, label: 'fA' });
     this.fB = device.createBuffer({ size: fBytes, usage: S | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST, label: 'fB' });
     this.flags = device.createBuffer({ size: this.n * 4, usage: S | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC, label: 'flags' });
+    this.sdf = device.createBuffer({ size: this.n * 4, usage: S | GPUBufferUsage.COPY_DST, label: 'sdf' });
     this.meanA = device.createBuffer({ size: this.n * 16, usage: S | GPUBufferUsage.COPY_DST, label: 'meanA' });
     this.meanB = device.createBuffer({ size: this.n * 4, usage: S | GPUBufferUsage.COPY_DST, label: 'meanB' });
+    this.wheels = device.createBuffer({ size: 16 + 32 * 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.params = device.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.disp = dispatch1D(this.n, WG);
+    this.dispP = this.packed ? dispatch1D(this.n / 2, WG) : this.disp;
     this.partialCount = this.disp.x * this.disp.y;
     this.partials = device.createBuffer({ size: this.partialCount * 32, usage: S });
     this.result = device.createBuffer({ size: 32, usage: S | GPUBufferUsage.COPY_SRC });
@@ -96,9 +107,9 @@ export class SolverGPU {
         compute: { module: device.createShaderModule({ code, label }), entryPoint: 'main' },
       });
     const L = this.lattice;
-    this.scPipe = mk(streamCollideWGSL(L, WG), 'stream-collide');
-    this.initPipe = mk(initWGSL(L, WG), 'init');
-    this.macroPipe = mk(macroWGSL(L, WG), 'macro');
+    this.scPipe = mk(streamCollideWGSL(L, WG, this.packed), 'stream-collide');
+    this.initPipe = mk(initWGSL(L, WG, this.packed), 'init');
+    this.macroPipe = mk(macroWGSL(L, WG, this.packed), 'macro');
     this.reducePipe = mk(reduceWGSL(), 'reduce');
     this.derivedPipe = mk(derivedWGSL(this.is3D ? 3 : 2), 'derived');
 
@@ -109,8 +120,8 @@ export class SolverGPU {
       });
     const B = (buffer: GPUBuffer) => ({ buffer });
     this.scBG = [
-      bg(this.scPipe, [[0, B(this.params)], [1, B(this.fA)], [2, B(this.fB)], [3, B(this.flags)]]),
-      bg(this.scPipe, [[0, B(this.params)], [1, B(this.fB)], [2, B(this.fA)], [3, B(this.flags)]]),
+      bg(this.scPipe, [[0, B(this.params)], [1, B(this.fA)], [2, B(this.fB)], [3, B(this.flags)], [4, B(this.wheels)], [5, B(this.sdf)]]),
+      bg(this.scPipe, [[0, B(this.params)], [1, B(this.fB)], [2, B(this.fA)], [3, B(this.flags)], [4, B(this.wheels)], [5, B(this.sdf)]]),
     ];
     this.initBG = [
       bg(this.initPipe, [[0, B(this.params)], [2, B(this.fA)], [3, B(this.flags)]]),
@@ -120,7 +131,7 @@ export class SolverGPU {
     this.macroBG = [this.fA, this.fB].map((f) =>
       bg(this.macroPipe, [
         [0, B(this.params)], [1, B(f)], [2, B(this.flags)], [3, velView],
-        [4, B(this.meanA)], [5, B(this.meanB)], [6, B(this.partials)],
+        [4, B(this.meanA)], [5, B(this.meanB)], [6, B(this.partials)], [7, B(this.wheels)], [8, B(this.sdf)],
       ]),
     ) as [GPUBindGroup, GPUBindGroup];
     this.reduceBG = bg(this.reducePipe, [[0, B(this.reduceParams)], [1, B(this.partials)], [2, B(this.result)]]);
@@ -170,6 +181,8 @@ export class SolverGPU {
     f[18] = p.tauWall ?? 0.5;
     f[20] = (p.spongeIn ?? 0) * nx;
     f[21] = 2.0;
+    u[22] = p.interp === false ? 0 : 1;
+    u[23] = this.dispP.strideX;
     this.device.queue.writeBuffer(this.params, 0, buf);
   }
 
@@ -194,14 +207,14 @@ export class SolverGPU {
       pass.setPipeline(this.initPipe);
       for (const g of this.initBG) {
         pass.setBindGroup(0, g);
-        pass.dispatchWorkgroups(this.disp.x, this.disp.y);
+        pass.dispatchWorkgroups(this.dispP.x, this.dispP.y);
       }
       this.pendingInit = false;
     }
     pass.setPipeline(this.scPipe);
     for (let s = 0; s < steps; s++) {
       pass.setBindGroup(0, this.scBG[this.parity]);
-      pass.dispatchWorkgroups(this.disp.x, this.disp.y);
+      pass.dispatchWorkgroups(this.dispP.x, this.dispP.y);
       this.parity ^= 1;
     }
     this.stepCount += steps;
@@ -216,7 +229,7 @@ export class SolverGPU {
       pass.setPipeline(this.initPipe);
       for (const g of this.initBG) {
         pass.setBindGroup(0, g);
-        pass.dispatchWorkgroups(this.disp.x, this.disp.y);
+        pass.dispatchWorkgroups(this.dispP.x, this.dispP.y);
       }
       this.pendingInit = false;
     }
@@ -295,6 +308,36 @@ export class SolverGPU {
     };
   }
 
+  /** Upload distances to the wall (cells) for interpolated bounce-back; values < 0 mean unknown. */
+  uploadSdf(d: Float32Array) {
+    const u = new Uint32Array(d.length);
+    const f = new Float32Array(1);
+    const b = new Uint32Array(f.buffer);
+    for (let i = 0; i < d.length; i++) {
+      if (!(d[i] >= 0)) continue;
+      f[0] = d[i];
+      u[i] = ~b[0] >>> 0;
+    }
+    this.device.queue.writeBuffer(this.sdf, 0, u);
+  }
+
+  /** Rotating wheels (grid space). Pass [] for none. At most 16. */
+  setWheels(list: { c: number[]; axis: number[]; r: number; hw: number }[]) {
+    const buf = new ArrayBuffer(16 + 32 * 16);
+    const n = Math.min(list.length, 16);
+    new Uint32Array(buf, 0, 1)[0] = n;
+    const f = new Float32Array(buf, 16);
+    list.slice(0, 16).forEach((w, k) => {
+      f.set([w.c[0], w.c[1], w.c[2], 1 / Math.max(w.r, 1e-3)], 8 * k);
+      f.set([w.axis[0], w.axis[1], w.axis[2], w.hw], 8 * k + 4);
+    });
+    this.device.queue.writeBuffer(this.wheels, 0, buf);
+  }
+
+  get wheelBuffer() {
+    return this.wheels;
+  }
+
   /** Upload obstacle flags from the CPU (used by validation cases and the fallback voxelizer). */
   uploadFlags(flags: Uint32Array) {
     this.device.queue.writeBuffer(this.flags, 0, flags);
@@ -312,9 +355,9 @@ export class SolverGPU {
     return out;
   }
 
-  /** Debug: read the current populations back to the CPU. */
+  /** Debug: read the current populations back to the CPU (unpacked to f32). */
   async readPopulations(): Promise<Float32Array> {
-    const size = this.lattice.q * this.n * 4;
+    const size = this.lattice.q * this.n * (this.packed ? 2 : 4);
     const buf = this.device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
     const enc = this.device.createCommandEncoder();
     enc.copyBufferToBuffer(this.current, 0, buf, 0, size);
@@ -387,7 +430,7 @@ export class SolverGPU {
   }
 
   destroy() {
-    for (const b of [this.fA, this.fB, this.flags, this.meanA, this.meanB, this.params, this.partials, this.result, this.reduceParams]) b.destroy();
+    for (const b of [this.sdf, this.wheels, this.fA, this.fB, this.flags, this.meanA, this.meanB, this.params, this.partials, this.result, this.reduceParams]) b.destroy();
     for (const s of this.staging) s.buf.destroy();
     this.sampleBuf?.destroy();
     for (const t of [this.velTex, this.vortTex, this.statTex, this.meanTex]) t.destroy();

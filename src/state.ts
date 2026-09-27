@@ -2,13 +2,15 @@ import type { GroundMode } from './solver/types';
 import type { CameraPreset } from './render/camera';
 import type { ColormapName } from './render/colormaps';
 
-export type Quality = 'low' | 'medium' | 'high' | 'ultra';
+export type Quality = 'low' | 'medium' | 'high' | 'ultra' | 'max';
+export const QUALITIES: Quality[] = ['low', 'medium', 'high', 'ultra', 'max'];
 
 export const GRID_2D: Record<Quality, { nx: number; ny: number; nz: number }> = {
   low: { nx: 512, ny: 192, nz: 1 },
   medium: { nx: 768, ny: 288, nz: 1 },
   high: { nx: 1024, ny: 384, nz: 1 },
   ultra: { nx: 1536, ny: 576, nz: 1 },
+  max: { nx: 2048, ny: 768, nz: 1 },
 };
 
 export const GRID_3D: Record<Quality, { nx: number; ny: number; nz: number }> = {
@@ -16,6 +18,7 @@ export const GRID_3D: Record<Quality, { nx: number; ny: number; nz: number }> = 
   medium: { nx: 224, ny: 96, nz: 112 },
   high: { nx: 256, ny: 128, nz: 128 },
   ultra: { nx: 320, ny: 160, nz: 160 },
+  max: { nx: 384, ny: 176, nz: 192 },
 };
 
 export interface FieldDef {
@@ -42,6 +45,8 @@ export interface Settings {
   mode: '2d' | '3d';
   quality2D: Quality;
   quality3D: Quality;
+  /** population storage precision (3D default fp16: half the memory and bandwidth) */
+  precision: 'f32' | 'f16';
   vehicle: string;
   upAxis: 'y' | 'z';
   flip: boolean;
@@ -55,6 +60,9 @@ export interface Settings {
   pitch: number;
   rideMm: number;
   ground: GroundMode;
+  rotatingWheels: boolean;
+  /** interpolated (Bouzidi) bounce-back from the true surface distance */
+  interpWalls: boolean;
   lesCs: number;
   paused: boolean;
   simSpeed: number;
@@ -105,6 +113,7 @@ export function defaultSettings(): Settings {
     mode: '3d',
     quality2D: 'high',
     quality3D: 'high',
+    precision: 'f16',
     vehicle: 'sedan',
     upAxis: 'y',
     flip: false,
@@ -117,6 +126,8 @@ export function defaultSettings(): Settings {
     pitch: 0,
     rideMm: 0,
     ground: 'moving',
+    rotatingWheels: true,
+    interpWalls: true,
     lesCs: 0.14,
     paused: false,
     simSpeed: 1,

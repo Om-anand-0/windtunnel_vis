@@ -8,6 +8,18 @@ export interface MeshData {
   /** bounding box after normalization */
   min: THREE.Vector3;
   max: THREE.Vector3;
+  /** raw → normalized transform (positions) */
+  transform?: THREE.Matrix4;
+  /** wheels (normalized space) of procedural presets: they spin with the rolling road */
+  wheels?: WheelDef[];
+}
+
+/** A wheel: cylinder with centre c, unit axis, radius r and half-width hw. */
+export interface WheelDef {
+  c: [number, number, number];
+  axis: [number, number, number];
+  r: number;
+  hw: number;
 }
 
 /** Signed volume of an indexed triangle soup (positive when outward oriented). */
@@ -99,7 +111,9 @@ export function normalizeMesh(
   const rot = new THREE.Matrix4();
   if (opts.up === 'z') rot.makeRotationX(-Math.PI / 2);
   const v = new THREE.Vector3();
+  const total = new THREE.Matrix4();
   const apply = (m: THREE.Matrix4, normal: boolean) => {
+    total.premultiply(m);
     const nm = new THREE.Matrix3().getNormalMatrix(m);
     for (let k = 0; k < p.length; k += 3) {
       v.set(p[k], p[k + 1], p[k + 2]).applyMatrix4(m);
@@ -134,7 +148,22 @@ export function normalizeMesh(
   const m = new THREE.Matrix4().makeScale(1 / len, 1 / len, 1 / len).multiply(new THREE.Matrix4().makeTranslation(-cx, -box.min.y, -cz));
   apply(m, false);
   bb();
-  return { positions: p, normals: n, indices: raw.indices, min: box.min.clone(), max: box.max.clone() };
+  return { positions: p, normals: n, indices: raw.indices, min: box.min.clone(), max: box.max.clone(), transform: total };
+}
+
+/** Wheels in grid space (centre, axis, radius, half-width), for the rotating-wheel boundary. */
+export function gridWheels(mesh: MeshData, M: THREE.Matrix4): WheelDef[] {
+  if (!mesh.wheels) return [];
+  const s = new THREE.Vector3();
+  M.decompose(new THREE.Vector3(), new THREE.Quaternion(), s);
+  const lin = new THREE.Matrix3().setFromMatrix4(M);
+  return mesh.wheels.map((w) => {
+    const c = new THREE.Vector3(...w.c).applyMatrix4(M);
+    const a = new THREE.Vector3(...w.axis).applyMatrix3(lin);
+    const axisScale = a.length();
+    a.normalize();
+    return { c: [c.x, c.y, c.z], axis: [a.x, a.y, a.z], r: w.r * s.x, hw: w.hw * axisScale };
+  });
 }
 
 export interface Placement {

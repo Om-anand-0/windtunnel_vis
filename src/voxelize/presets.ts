@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { mergeObject, MeshData, normalizeMesh } from './mesh';
+import { mergeObject, MeshData, normalizeMesh, WheelDef } from './mesh';
 
 /**
  * Procedural, unbranded vehicle presets. Bodies are lofted superellipse cross-sections (closed,
@@ -23,6 +23,8 @@ export const PRESETS: PresetInfo[] = [
   { id: 'suv', name: 'SUV / van', lengthM: 4.9, placement: 'ground' },
   { id: 'truck', name: 'Truck + trailer', lengthM: 16.5, placement: 'ground' },
   { id: 'f1', name: 'Open-wheel racer', lengthM: 5.5, placement: 'ground' },
+  { id: 'ahmed25', name: 'Ahmed body 25° (reference)', lengthM: 1.044, placement: 'ground' },
+  { id: 'ahmed35', name: 'Ahmed body 35° (reference)', lengthM: 1.044, placement: 'ground' },
   { id: 'sphere', name: 'Sphere (validation)', lengthM: 0.2, placement: 'center', validation: true },
   { id: 'cylinder', name: 'Cylinder (validation)', lengthM: 0.1, placement: 'center', spanwise: true, validation: true },
 ];
@@ -130,7 +132,11 @@ function loft(spec: LoftSpec): THREE.BufferGeometry {
   return g;
 }
 
+/** collects wheel definitions while a preset is being built */
+let wheelSink: WheelDef[] | null = null;
+
 function wheel(r: number, width: number, x: number, z: number, y = r): THREE.Mesh {
+  wheelSink?.push({ c: [x, y, z], axis: [0, 0, 1], r, hw: width / 2 });
   const g = new THREE.CylinderGeometry(r, r, width, 40, 1, false);
   g.rotateX(Math.PI / 2);
   g.translate(x, y, z);
@@ -299,6 +305,43 @@ function f1(): THREE.Object3D {
   return o;
 }
 
+/**
+ * Ahmed reference body (Ahmed, Ramm & Faltin 1984): 1044 × 389 × 288 mm, front edges rounded with
+ * R = 100 mm, a 222 mm rear slant at angle φ, 50 mm ground clearance on four Ø30 mm stilts.
+ */
+export function ahmed(slantDeg: number): THREE.Object3D {
+  const L = 1044, W = 389, H = 288, R = 100, Ls = 222, c = 50;
+  const k = 1 / L;
+  const tan = Math.tan((slantDeg * Math.PI) / 180);
+  const round = (x: number) => (x < R ? R - Math.sqrt(Math.max(R * R - (R - x) ** 2, 0)) : 0);
+  const N = 80;
+  const xs = Array.from({ length: N + 1 }, (_, i) => {
+    const u = i / N;
+    // dense sampling over the front rounding and the slant
+    return u < 0.3 ? (u / 0.3) * R * 1.2 : R * 1.2 + ((u - 0.3) / 0.7) * (L - R * 1.2);
+  });
+  const top: [number, number][] = [], bot: [number, number][] = [], hw: [number, number][] = [], belt: [number, number][] = [];
+  for (const x of xs) {
+    const r = round(x);
+    let t = c + H - r;
+    if (x > L - Ls) t = Math.min(t, c + H - (x - (L - Ls)) * tan);
+    top.push([x * k, t * k]);
+    bot.push([x * k, (c + r) * k]);
+    hw.push([x * k, (W / 2 - r) * k]);
+    belt.push([x * k, (c + H / 2) * k]);
+  }
+  const o = new THREE.Group();
+  o.add(new THREE.Mesh(loft({ x0: 0, x1: 1, top, bot, belt, halfW: hw, exp: 14, tumble: 0, stations: 140, ring: 72 })));
+  for (const x of [163, 163 + 470]) {
+    for (const z of [-(W / 2 - 60), W / 2 - 60]) {
+      const g = new THREE.CylinderGeometry(15 * k, 15 * k, (c + 20) * k, 20);
+      g.translate(x * k, ((c + 20) / 2) * k, z * k);
+      o.add(new THREE.Mesh(g));
+    }
+  }
+  return o;
+}
+
 function sphere(): THREE.Object3D {
   return new THREE.Mesh(new THREE.SphereGeometry(0.5, 96, 64));
 }
@@ -309,16 +352,30 @@ function cylinder(): THREE.Object3D {
   return new THREE.Mesh(g);
 }
 
-const BUILDERS: Record<string, () => THREE.Object3D> = { sedan, sports, suv, truck, f1, sphere, cylinder };
+const BUILDERS: Record<string, () => THREE.Object3D> = { sedan, sports, suv, truck, f1, sphere, cylinder, ahmed25: () => ahmed(25), ahmed35: () => ahmed(35) };
 
 const cache = new Map<string, MeshData>();
 
 export function buildPreset(id: string): MeshData {
   const hit = cache.get(id);
   if (hit) return hit;
+  wheelSink = [];
   const obj = BUILDERS[id]();
+  const wheels = wheelSink;
+  wheelSink = null;
   const raw = mergeObject(obj);
   const mesh = normalizeMesh(raw, { alignLongest: id !== 'cylinder' });
+  if (wheels.length && mesh.transform) {
+    const T = mesh.transform;
+    const scale = new THREE.Vector3();
+    T.decompose(new THREE.Vector3(), new THREE.Quaternion(), scale);
+    const lin = new THREE.Matrix3().setFromMatrix4(T);
+    mesh.wheels = wheels.map((w) => {
+      const c = new THREE.Vector3(...w.c).applyMatrix4(T);
+      const a = new THREE.Vector3(...w.axis).applyMatrix3(lin).normalize();
+      return { c: [c.x, c.y, c.z], axis: [a.x, a.y, a.z], r: w.r * scale.x, hw: w.hw * scale.x };
+    });
+  }
   cache.set(id, mesh);
   return mesh;
 }
