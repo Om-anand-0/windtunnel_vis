@@ -1,6 +1,6 @@
 import type { SolverFactory } from '../backend/types';
 import { GridDims } from '../solver/types';
-import { coefficients } from './aero';
+import { coefficients, windowStats } from './aero';
 import { crossingFrequency, cylinderStRef, sphereCdRef } from './strouhal';
 import { buildPreset } from '../voxelize/presets';
 import { placementMatrix } from '../voxelize/mesh';
@@ -201,8 +201,9 @@ export const CASES: ValidationCase[] = [
       const { flags, info, sdf } = voxelizeCPU(mesh, matrix.elements, d);
       s.uploadFlags(Uint32Array.from(flags));
       s.uploadSdf?.(sdf);
-      const total = Math.round((6 * L) / U);
-      const measureFrom = Math.round((2.5 * L) / U);
+      // the impulsive start leaves C_D drifting for ~5 L/U while the wake builds up
+      const total = Math.round((11 * L) / U);
+      const measureFrom = Math.round((5 * L) / U);
       const chunk = 50;
       const tt: number[] = [], cds: number[] = [];
       for (let step = 0; step < total; step += chunk) {
@@ -216,6 +217,7 @@ export const CASES: ValidationCase[] = [
       s.destroy();
       const sel = cds.filter((_, i) => tt[i] >= measureFrom);
       const cd = sel.reduce((a, b) => a + b, 0) / Math.max(sel.length, 1);
+      const { se } = windowStats(tt, cds, tt.length ? tt[tt.length - 1] - measureFrom : 0);
       const ref = 0.285;
       const err = (cd - ref) / ref;
       return {
@@ -224,6 +226,7 @@ export const CASES: ValidationCase[] = [
         metrics: [
           { label: 'mean C_D', value: isFinite(cd) ? cd.toFixed(3) : '—', expected: '0.285 ± 35 % (Ahmed 1984; Re_sim ≪ Re_exp)' },
           { label: 'deviation', value: isFinite(err) ? (err * 100).toFixed(1) + ' %' : '—' },
+          { label: 'standard error', value: isFinite(se) ? '± ' + se.toFixed(3) : '—' },
           { label: 'grid / τ', value: `${d.nx}×${d.ny}×${d.nz}, τ = ${(3 * nu + 0.5).toFixed(4)}` },
           { label: 'blockage', value: ((info.frontal / (d.ny * d.nz)) * 100).toFixed(1) + ' %' },
         ],
