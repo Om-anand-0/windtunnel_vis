@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { FullscreenPass, GLTex, makeTex, SolverGL } from '../solver/SolverGL';
-import type { MeshData } from '../voxelize/mesh';
+import type { MaterialDef, MeshData } from '../voxelize/mesh';
+import { MAX_TEXTURE, PRESET_PAINT } from './materials';
 import { COLORMAP_GLSL } from './colormaps';
 import type { RenderState } from './renderState';
 
@@ -239,13 +240,15 @@ void main() {
 
 const MESH_VS = /* glsl */ `
 precision highp float;
-in vec3 position; in vec3 normal;
+in vec3 position; in vec3 normal; in vec2 uv; in vec4 color;
 uniform mat4 viewProj; uniform mat4 model; uniform mat4 normalM;
-out vec3 world; out vec3 vn;
+out vec3 world; out vec3 vn; out vec2 vUv; out vec4 vCol;
 void main() {
   vec4 w = model * vec4(position, 1.0);
   world = w.xyz;
   vn = normalize((normalM * vec4(normal, 0.0)).xyz);
+  vUv = uv;
+  vCol = color;
   gl_Position = viewProj * w;
 }`;
 
@@ -253,14 +256,48 @@ const MESH_FS = /* glsl */ `
 precision highp float; precision highp int; precision highp sampler2D;
 uniform sampler2D VEL; uniform sampler2D MEAN; uniform vec2 N; uniform float U; uniform float rhoRef; uniform vec3 eye;
 uniform int mode; uniform int useMean; uniform float cpMin; uniform float cpMax; uniform float opacity;
-in vec3 world; in vec3 vn;
+uniform sampler2D MAP; uniform vec4 matColor; uniform vec3 matEmissive; uniform float matMetal; uniform float matRough;
+uniform int matAlphaMode; uniform float matCutoff; uniform int hasMap; uniform int vcol;
+in vec3 world; in vec3 vn; in vec2 vUv; in vec4 vCol;
 out vec4 outColor;
 ${COLORMAP_GLSL}
 float solidAt(vec2 p) { return texture(VEL, p / N).w; }
+vec3 toDisplay(vec3 c) { return pow(max(c / (1.0 + 0.18 * c), vec3(0.0)), vec3(1.0 / 2.2)); }
+vec3 studioEnv(vec3 r, vec3 n, float rough) {
+  vec3 sky = mix(vec3(0.04, 0.045, 0.05), vec3(1.05, 1.1, 1.15), smoothstep(-0.08, 0.65, r.y));
+  float band = exp(-pow((r.y - 0.1) * 8.0, 2.0)) * 0.55;
+  return mix(sky + vec3(band), vec3(0.3 + 0.28 * n.y), clamp(rough * rough * 1.4, 0.0, 1.0));
+}
+// same model as MESH_WGSL's shadeMaterial
+vec4 shadeMaterial(vec3 n, vec3 v, vec4 texel) {
+  vec4 base = matColor;
+  if (hasMap == 1) base *= texel;
+  if (vcol == 1) base *= vCol;
+  float a = base.a;
+  if (matAlphaMode == 1) { if (a < matCutoff) discard; a = 1.0; }
+  else if (matAlphaMode == 0) a = 1.0;
+  float rough = clamp(matRough, 0.04, 1.0), metal = clamp(matMetal, 0.0, 1.0);
+  vec3 f0 = mix(vec3(0.04), base.rgb, metal);
+  float nv = max(dot(n, v), 1e-3);
+  vec3 fres = f0 + (1.0 - f0) * pow(1.0 - nv, 5.0) * (1.0 - 0.7 * rough);
+  float shin = clamp(2.0 / max(pow(rough, 4.0), 1e-4) - 2.0, 2.0, 4096.0);
+  float lobe = (shin + 8.0) / 25.13;
+  vec3 L0 = normalize(vec3(-0.45, 0.8, 0.55)), L1 = normalize(vec3(0.6, 0.3, -0.7));
+  float d0 = max(dot(n, L0), 0.0), d1 = max(dot(n, L1), 0.0);
+  float diff = d0 + 0.35 * d1;
+  float spec = d0 * pow(max(dot(n, normalize(L0 + v)), 0.0), shin) * lobe + 0.35 * d1 * pow(max(dot(n, normalize(L1 + v)), 0.0), shin) * lobe;
+  vec3 ambient = vec3(0.1 + 0.22 * (0.5 + 0.5 * n.y));
+  vec3 env = studioEnv(reflect(-v, n), n, rough);
+  vec3 diffuse = base.rgb * (1.0 - metal) * (diff * 0.85 + ambient);
+  vec3 refl = fres * (env * 0.85 + spec * 0.6);
+  return vec4(toDisplay(diffuse * a + refl + matEmissive) * opacity, a * opacity);
+}
 void main() {
+  vec4 texel = texture(MAP, vUv);
   vec3 n = normalize(vn);
   if (!gl_FrontFacing) n = -n;
   vec3 v = normalize(eye - world);
+  if (mode == 2) { outColor = shadeMaterial(n, v, texel); return; }
   vec3 key = normalize(vec3(-0.45, 0.8, 0.55));
   float lam = max(dot(n, key), 0.0);
   float hemi = 0.5 + 0.5 * n.y;
@@ -321,6 +358,63 @@ const PREMUL = {
   depthWrite: false,
 } as const;
 
+const WHITE = (() => {
+  const t = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+  t.needsUpdate = true;
+  return t;
+})();
+
+/** Uniforms of one "Materials" mode part (see MESH_FS shadeMaterial). */
+function materialUniforms(m: MaterialDef, map: THREE.Texture | null): Record<string, THREE.IUniform> {
+  return {
+    MAP: { value: map ?? WHITE },
+    matColor: { value: new THREE.Vector4(...m.color) },
+    matEmissive: { value: new THREE.Vector3(...m.emissive) },
+    matMetal: { value: m.metalness },
+    matRough: { value: m.roughness },
+    matAlphaMode: { value: m.alphaMode },
+    matCutoff: { value: m.alphaCutoff },
+    hasMap: { value: map ? 1 : 0 },
+    vcol: { value: m.vertexColors ? 1 : 0 },
+  };
+}
+
+/**
+ * sRGB colour map with mipmaps, capped to MAX_TEXTURE like the WebGPU path. Image bitmaps are
+ * redrawn into a canvas: three.js leaves UNPACK_FLIP_Y untouched for them, so their orientation
+ * would depend on whatever the shared GL context last uploaded.
+ */
+function mapTexture(img: NonNullable<MaterialDef['map']>, flipY: boolean): THREE.Texture {
+  let src: TexImageSource = img;
+  const w = (img as HTMLImageElement).naturalWidth || img.width, h = (img as HTMLImageElement).naturalHeight || img.height;
+  const k = Math.min(1, MAX_TEXTURE / Math.max(w, h, 1));
+  const bitmap = (typeof ImageBitmap !== 'undefined' && img instanceof ImageBitmap) || (typeof OffscreenCanvas !== 'undefined' && img instanceof OffscreenCanvas);
+  if (k < 1 || bitmap || img instanceof ImageData) {
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(w * k));
+    c.height = Math.max(1, Math.round(h * k));
+    const g2 = c.getContext('2d')!;
+    if (img instanceof ImageData) {
+      const tmp = document.createElement('canvas');
+      tmp.width = img.width; tmp.height = img.height;
+      tmp.getContext('2d')!.putImageData(img, 0, 0);
+      g2.drawImage(tmp, 0, 0, c.width, c.height);
+    } else {
+      g2.drawImage(img as CanvasImageSource, 0, 0, c.width, c.height);
+    }
+    src = c;
+  }
+  const t = new THREE.Texture(src as HTMLImageElement);
+  t.flipY = flipY;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.generateMipmaps = true;
+  t.anisotropy = 8;
+  t.needsUpdate = true;
+  return t;
+}
+
 export class RendererGL {
   readonly three: THREE.WebGLRenderer;
   readonly gl: WebGL2RenderingContext;
@@ -334,8 +428,14 @@ export class RendererGL {
   private box: THREE.LineSegments;
   private rakeLine: THREE.Line;
   private rakeHandle: THREE.Mesh;
-  private body: THREE.Mesh<THREE.BufferGeometry, THREE.RawShaderMaterial> | null = null;
+  private body: THREE.Mesh<THREE.BufferGeometry, THREE.RawShaderMaterial | THREE.RawShaderMaterial[]> | null = null;
   private meshMat: THREE.RawShaderMaterial;
+  /** "Materials" mode: one material per part (sharing meshMat's frame uniforms), used with geometry groups */
+  private partMats: { mat: THREE.RawShaderMaterial; blend: boolean }[] = [];
+  private partTextures: THREE.Texture[] = [];
+  /** depth-only copy of the body, drawn before a see-through body so only its nearest surface blends */
+  private bodyDepth: THREE.Mesh<THREE.BufferGeometry, THREE.RawShaderMaterial | THREE.RawShaderMaterial[]> | null = null;
+  private depthMats: { single: THREE.RawShaderMaterial; parts: THREE.RawShaderMaterial[] } | null = null;
 
   // tracers
   private advect: FullscreenPass;
@@ -388,6 +488,7 @@ export class RendererGL {
       ...common(), model: { value: new THREE.Matrix4() }, normalM: { value: new THREE.Matrix4() }, VEL: { value: null }, MEAN: { value: null },
       N: { value: new THREE.Vector2() }, U: { value: 0.05 }, rhoRef: { value: 1 }, eye: { value: new THREE.Vector3() }, mode: { value: 1 }, useMean: { value: 1 },
       cpMin: { value: -1.5 }, cpMax: { value: 1 }, opacity: { value: 1 },
+      ...materialUniforms(PRESET_PAINT, null),
     });
     this.box = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x5f7593, transparent: true, opacity: 0.7 }));
     this.box.renderOrder = 5;
@@ -446,15 +547,69 @@ export class RendererGL {
       this.body.geometry.dispose();
       this.body = null;
     }
+    if (this.bodyDepth) {
+      this.scene.remove(this.bodyDepth);
+      this.bodyDepth = null;
+    }
+    for (const p of this.partMats) p.mat.dispose();
+    for (const t of this.partTextures) t.dispose();
+    if (this.depthMats) for (const m of [this.depthMats.single, ...this.depthMats.parts]) m.dispose();
+    this.partMats = [];
+    this.partTextures = [];
+    this.depthMats = null;
     if (!mesh) return;
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
     g.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3));
     g.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
+    const ap = mesh.appearance;
+    const mk = (m: MaterialDef, map: THREE.Texture | null) =>
+      new THREE.RawShaderMaterial({
+        glslVersion: THREE.GLSL3, vertexShader: MESH_VS, fragmentShader: MESH_FS, side: THREE.DoubleSide,
+        // frame uniforms are shared by reference with meshMat, so they are updated once per frame
+        uniforms: { ...this.meshMat.uniforms, ...materialUniforms(m, map) },
+      });
+    if (ap) {
+      g.setAttribute('uv', new THREE.BufferAttribute(ap.uvs, 2));
+      g.setAttribute('color', new THREE.BufferAttribute(ap.colors, 4, true));
+      const maps = new Map<unknown, THREE.Texture>();
+      this.partMats = ap.materials.map((m) => {
+        let t: THREE.Texture | null = null;
+        if (m.map) {
+          t = maps.get(m.map) ?? null;
+          if (!t) {
+            t = mapTexture(m.map, m.flipY);
+            maps.set(m.map, t);
+            this.partTextures.push(t);
+          }
+        }
+        return { mat: mk(m, t), blend: m.alphaMode === 2 };
+      });
+      // glass groups last: three.js draws a mesh's blended groups in group order
+      for (const glass of [false, true]) ap.parts.forEach((p) => this.partMats[p.material].blend === glass && g.addGroup(p.start, p.count, p.material));
+    } else {
+      this.partMats = [{ mat: mk(PRESET_PAINT, null), blend: false }];
+      g.addGroup(0, mesh.indices.length, 0);
+    }
     this.body = new THREE.Mesh(g, this.meshMat);
     this.body.frustumCulled = false;
     this.body.renderOrder = 1;
     this.scene.add(this.body);
+    // same program and uniforms, colour writes off (alpha-masked parts still discard)
+    const depthOnly = (m: THREE.RawShaderMaterial) => {
+      const d = new THREE.RawShaderMaterial({ glslVersion: THREE.GLSL3, vertexShader: MESH_VS, fragmentShader: MESH_FS, side: THREE.DoubleSide, uniforms: m.uniforms });
+      d.colorWrite = false;
+      return d;
+    };
+    this.depthMats = { single: depthOnly(this.meshMat), parts: this.partMats.map((p) => depthOnly(p.mat)) };
+    // glass stays out of the pre-pass so the body behind it still shows through
+    this.depthMats.parts.forEach((d, k) => (d.visible = !this.partMats[k].blend));
+    this.bodyDepth = new THREE.Mesh(g, this.depthMats.single);
+    this.bodyDepth.frustumCulled = false;
+    // opaque list, after the slice (2), before every blended object
+    this.bodyDepth.renderOrder = 3;
+    this.bodyDepth.visible = false;
+    this.scene.add(this.bodyDepth);
   }
 
   refillParticles() {
@@ -665,9 +820,22 @@ export class RendererGL {
       mu.model.value.fromArray(rs.mesh.model);
       mu.normalM.value.fromArray(rs.mesh.normalMatrix);
       mu.VEL.value = vel; mu.MEAN.value = mean; mu.N.value.copy(N); mu.U.value = rs.flow.U; mu.rhoRef.value = rs.flow.rhoRef;
-      mu.eye.value.set(...rs.eye); mu.mode.value = rs.mesh.mode === 'cp' ? 1 : 0; mu.useMean.value = rs.mesh.useMean ? 1 : 0;
+      mu.eye.value.set(...rs.eye); mu.mode.value = rs.mesh.mode === 'cp' ? 1 : rs.mesh.mode === 'tex' ? 2 : 0; mu.useMean.value = rs.mesh.useMean ? 1 : 0;
       mu.cpMin.value = rs.mesh.cpMin; mu.cpMax.value = rs.mesh.cpMax; mu.opacity.value = rs.mesh.opacity;
-      Object.assign(this.meshMat, rs.mesh.opacity < 0.999 ? PREMUL : { blending: THREE.NoBlending, transparent: false, depthWrite: true });
+      const opaque = { blending: THREE.NoBlending, transparent: false, depthWrite: true };
+      const faded = rs.mesh.opacity < 0.999;
+      Object.assign(this.meshMat, faded ? PREMUL : opaque);
+      const tex = rs.mesh.mode === 'tex' && this.partMats.length > 0;
+      if (tex) {
+        for (const p of this.partMats) Object.assign(p.mat, faded || p.blend ? PREMUL : opaque);
+        this.body.material = this.partMats.map((p) => p.mat);
+      } else {
+        this.body.material = this.meshMat;
+      }
+      if (this.bodyDepth && this.depthMats) {
+        this.bodyDepth.visible = rs.mesh.visible && faded;
+        this.bodyDepth.material = tex ? this.depthMats.parts : this.depthMats.single;
+      }
       this.body.visible = rs.mesh.visible;
     }
     if (this.trails) {

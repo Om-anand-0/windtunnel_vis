@@ -3,7 +3,7 @@ import { formatRe } from '../analysis/units';
 import { COLORMAPS } from '../render/colormaps';
 import { FIELDS, GRID_2D, GRID_3D, QUALITIES, Quality } from '../state';
 import { clearSaved } from '../persist';
-import { loadModelFile } from '../voxelize/loaders';
+import { loadModelFiles, UPLOAD_ACCEPT } from '../voxelize/loaders';
 import { PRESETS } from '../voxelize/presets';
 import { applyButtonTips, BUTTON_TIPS, installTooltips, PANEL_TIPS } from './tips';
 import { buttonRow, Control, h, note, section, segmented, select, slider, toast, toggle } from './widgets';
@@ -72,28 +72,30 @@ export class Panel {
     ];
     this.ctl.vehicle = select<string>(veh, { label: 'Model', options: vopts(), value: s.vehicle, onChange: (v) => app.setVehicle(v) });
     (this.ctl.vehicle as any).refreshOptions = () => (this.ctl.vehicle as any).setOptions(vopts());
-    const file = h('input', { type: 'file', accept: '.glb,.gltf,.obj,.stl', style: 'display:none' });
+    const file = h('input', { type: 'file', accept: UPLOAD_ACCEPT, multiple: '', style: 'display:none' });
     veh.append(file);
     const [upBtn] = buttonRow(veh, [{ label: 'Upload .glb / .obj / .stl…', onClick: () => file.click(), cls: 'wide' }]);
-    const handleFile = async (f: File) => {
+    const handleFiles = async (fs: File[]) => {
       upBtn.textContent = 'Loading…';
       try {
-        const m = await loadModelFile(f);
+        const m = await loadModelFiles(fs);
         app.setUpload(m);
         await app.setVehicle('upload');
-        toast(`Loaded ${m.name} — ${m.triangles.toLocaleString()} triangles`, 'info');
+        const look = m.raw.appearance?.textured && s.surface !== 'tex' ? ' · Body surface → Shading → Materials shows its own paint and textures' : '';
+        toast(`Loaded ${m.name} — ${m.triangles.toLocaleString()} triangles${look}`, 'info', look ? 7000 : 4000);
+        if (m.missing.length) toast(`Not found: ${m.missing.slice(0, 4).join(', ')}${m.missing.length > 4 ? '…' : ''} — select or drop these files together with the model`, 'warn', 9000);
       } catch (e) {
         toast(String((e as Error).message ?? e), 'error', 7000);
       }
       upBtn.textContent = 'Upload .glb / .obj / .stl…';
       this.sync();
     };
-    file.addEventListener('change', () => file.files?.[0] && handleFile(file.files[0]));
+    file.addEventListener('change', () => { if (file.files?.length) handleFiles([...file.files]); file.value = ''; });
     document.body.addEventListener('dragover', (e) => e.preventDefault());
     document.body.addEventListener('drop', (e) => {
       e.preventDefault();
-      const f = e.dataTransfer?.files?.[0];
-      if (f) handleFile(f);
+      const fs = [...(e.dataTransfer?.files ?? [])];
+      if (fs.length) handleFiles(fs);
     });
     this.ctl.upAxis = segmented(veh, {
       label: 'Up axis', options: [{ value: 'y', label: 'Y-up' }, { value: 'z', label: 'Z-up' }], value: s.upAxis,
@@ -193,8 +195,8 @@ export class Panel {
     const body = section(root, 'Body surface');
     this.ctl.bodyOn = toggle(body, { label: 'Show 3D body', value: s.bodyOn, onChange: (v) => (s.bodyOn = v) });
     this.ctl.surface = segmented(body, {
-      label: 'Shading', options: [{ value: 'cp', label: 'Cp heatmap' }, { value: 'lit', label: 'Studio' }], value: s.surface,
-      onChange: (v) => (s.surface = v as 'cp' | 'lit'),
+      label: 'Shading', options: [{ value: 'cp', label: 'Cp heatmap' }, { value: 'lit', label: 'Studio' }, { value: 'tex', label: 'Materials' }], value: s.surface,
+      onChange: (v) => (s.surface = v as 'cp' | 'lit' | 'tex'),
     });
     this.ctl.surfaceMean = toggle(body, { label: 'Time-averaged Cp', value: s.surfaceMean, onChange: (v) => (s.surfaceMean = v) });
 

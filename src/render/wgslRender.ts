@@ -52,18 +52,33 @@ struct MeshU {
 };
 @group(1) @binding(0) var<uniform> M: MeshU;
 
+// per-part material (mode 2): glTF metallic-roughness factors and a base-colour map
+struct Mat {
+  color: vec4<f32>,
+  emissive: vec4<f32>,
+  metal: f32, rough: f32, alphaMode: u32, cutoff: f32,
+  hasMap: u32, vcol: u32, p0: u32, p1: u32,
+};
+@group(2) @binding(0) var<uniform> MT: Mat;
+@group(2) @binding(1) var mapTex: texture_2d<f32>;
+@group(2) @binding(2) var mapSmp: sampler;
+
 struct VO {
-  @builtin(position) pos: vec4<f32>,
+  @builtin(position) @invariant pos: vec4<f32>,
   @location(0) world: vec3<f32>,
   @location(1) n: vec3<f32>,
+  @location(2) uv: vec2<f32>,
+  @location(3) col: vec4<f32>,
 };
 
-@vertex fn vs(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>) -> VO {
+@vertex fn vs(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) col: vec4<f32>) -> VO {
   var o: VO;
   let w = M.model * vec4<f32>(p, 1.0);
   o.world = w.xyz;
   o.n = normalize((M.normalM * vec4<f32>(n, 0.0)).xyz);
   o.pos = F.viewProj * w;
+  o.uv = uv;
+  o.col = col;
   return o;
 }
 
@@ -84,10 +99,68 @@ fn surfaceCp(world: vec3<f32>, n: vec3<f32>) -> f32 {
   return cpOf(rho);
 }
 
+fn toDisplay(c: vec3<f32>) -> vec3<f32> {
+  let t = c / (vec3<f32>(1.0) + 0.18 * c);
+  return pow(max(t, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+}
+
+/** Studio environment seen along r: soft-box overhead, horizon band, dark floor; blurred with roughness. */
+fn studioEnv(r: vec3<f32>, n: vec3<f32>, rough: f32) -> vec3<f32> {
+  let sky = mix(vec3<f32>(0.04, 0.045, 0.05), vec3<f32>(1.05, 1.1, 1.15), smoothstep(-0.08, 0.65, r.y));
+  let band = exp(-pow((r.y - 0.1) * 8.0, 2.0)) * 0.55;
+  let soft = vec3<f32>(0.3 + 0.28 * n.y);
+  return mix(sky + vec3<f32>(band), soft, clamp(rough * rough * 1.4, 0.0, 1.0));
+}
+
+fn shadeMaterial(i: VO, n: vec3<f32>, v: vec3<f32>, texel: vec4<f32>) -> vec4<f32> {
+  var base = MT.color;
+  if (MT.hasMap != 0u) { base *= texel; }
+  if (MT.vcol != 0u) { base *= i.col; }
+  var a = base.a;
+  if (MT.alphaMode == 1u) {
+    if (a < MT.cutoff) { discard; }
+    a = 1.0;
+  } else if (MT.alphaMode == 0u) {
+    a = 1.0;
+  }
+  let rough = clamp(MT.rough, 0.04, 1.0);
+  let metal = clamp(MT.metal, 0.0, 1.0);
+  let albedo = base.rgb;
+  let f0 = mix(vec3<f32>(0.04), albedo, metal);
+  let nv = max(dot(n, v), 1e-3);
+  let fres = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - nv, 5.0) * (1.0 - 0.7 * rough);
+  // key + fill lights with a roughness-normalized Blinn-Phong lobe
+  let shin = clamp(2.0 / max(pow(rough, 4.0), 1e-4) - 2.0, 2.0, 4096.0);
+  let lobe = (shin + 8.0) / 25.13;
+  var diff = vec3<f32>(0.0);
+  var spec = vec3<f32>(0.0);
+  let L0 = normalize(vec3<f32>(-0.45, 0.8, 0.55));
+  let L1 = normalize(vec3<f32>(0.6, 0.3, -0.7));
+  for (var k = 0; k < 2; k++) {
+    let L = select(L1, L0, k == 0);
+    let I = select(0.35, 1.0, k == 0);
+    let nl = max(dot(n, L), 0.0);
+    let hv = normalize(L + v);
+    diff += vec3<f32>(I * nl);
+    spec += vec3<f32>(I * nl * pow(max(dot(n, hv), 0.0), shin) * lobe);
+  }
+  let ambient = vec3<f32>(0.1 + 0.22 * (0.5 + 0.5 * n.y));
+  let env = studioEnv(reflect(-v, n), n, rough);
+  let diffuse = albedo * (1.0 - metal) * (diff * 0.85 + ambient);
+  let refl = fres * (env * 0.85 + spec * 0.6);
+  let o = a * M.opacity;
+  // premultiplied output: reflections stay visible on see-through glass
+  let c = toDisplay(diffuse * a + refl + MT.emissive.rgb);
+  return vec4<f32>(c * M.opacity, o);
+}
+
 @fragment fn fs(i: VO, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32> {
+  // sampled up front, in uniform control flow (the 1×1 white map when a part has none)
+  let texel = textureSample(mapTex, mapSmp, i.uv);
   var n = normalize(i.n);
   if (!ff) { n = -n; }
   let v = normalize(F.eye.xyz - i.world);
+  if (M.mode == 2u) { return shadeMaterial(i, n, v, texel); }
   let key = normalize(vec3<f32>(-0.45, 0.8, 0.55));
   let fill = normalize(vec3<f32>(0.6, 0.3, -0.7));
   let lam = max(dot(n, key), 0.0);

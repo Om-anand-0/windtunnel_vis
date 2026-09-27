@@ -12,7 +12,7 @@ export interface RenderState {
     visible: boolean;
     model: Float32Array;
     normalMatrix: Float32Array;
-    mode: 'lit' | 'cp';
+    mode: 'lit' | 'cp' | 'tex';
     cmap: number;
     useMean: boolean;
     cpMin: number;

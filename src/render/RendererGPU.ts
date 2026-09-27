@@ -1,5 +1,6 @@
 import type { SolverGPU } from '../solver/SolverGPU';
-import type { MeshData } from '../voxelize/mesh';
+import type { MaterialDef, MeshData, TextureImage } from '../voxelize/mesh';
+import { materialUniform, PRESET_PAINT, textureFromImage } from './materials';
 import { BRICKS_WGSL, PARTICLES_WGSL, PROBES_WGSL, STREAMLINES_WGSL } from './tracers';
 import { GROUND_WGSL, MESH_WGSL, SEGMENTS_WGSL, SLICE_WGSL, STREAM_WGSL, TRAILS_WGSL, VOLUME_WGSL } from './wgslRender';
 import type { RenderState } from './renderState';
@@ -47,6 +48,14 @@ export class RendererGPU {
   private meshVB: GPUBuffer | null = null;
   private meshIB: GPUBuffer | null = null;
   private meshCount = 0;
+  /** per-material draw ranges for the "Materials" mode (presets: one range with the preset paint) */
+  private meshParts: { start: number; count: number; bg: GPUBindGroup; blend: boolean }[] = [];
+  private meshRes: { destroy(): void }[] = [];
+  private meshGen = 0;
+  private matLayout: GPUBindGroupLayout;
+  private matSampler: GPUSampler;
+  private whiteTex: GPUTexture;
+  private presetMatBG: GPUBindGroup;
 
   private sliceU: GPUBuffer;
   private sliceBG: GPUBindGroup;
@@ -137,7 +146,19 @@ export class RendererGPU {
       { binding: 0, visibility: C, buffer: { type: 'uniform' } },
       { binding: 1, visibility: C, buffer: { type: 'storage' } },
     ]);
-    this.meshPipeLayout = device.createPipelineLayout({ bindGroupLayouts: [this.frameLayout, this.layouts.uni] });
+    this.matLayout = layout1([
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+    ]);
+    this.meshPipeLayout = device.createPipelineLayout({ bindGroupLayouts: [this.frameLayout, this.layouts.uni, this.matLayout] });
+    this.matSampler = device.createSampler({
+      magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', maxAnisotropy: 8,
+      addressModeU: 'repeat', addressModeV: 'repeat',
+    });
+    this.whiteTex = device.createTexture({ size: [1, 1], format: 'rgba8unorm-srgb', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    device.queue.writeTexture({ texture: this.whiteTex }, new Uint8Array([255, 255, 255, 255]), { bytesPerRow: 4 }, [1, 1]);
+    this.presetMatBG = this.materialBG(PRESET_PAINT, null, []);
 
     this.meshU = uni(160);
     this.meshBG = device.createBindGroup({ layout: this.layouts.uni, entries: [{ binding: 0, resource: { buffer: this.meshU } }] });
@@ -248,23 +269,104 @@ export class RendererGPU {
     this.volBG = this.device.createBindGroup({ layout: this.volLayout, entries: [{ binding: 0, resource: { buffer: this.volU } }, { binding: 1, resource: this.brickTex.createView() }] });
   }
 
+  /** opaque; blended (premultiplied, tested ≤ against a depth pre-pass); depth-only pre-pass */
+  private meshPipeline(kind: 'opaque' | 'blend' | 'depth'): GPURenderPipeline {
+    const transparent = kind === 'blend';
+    return this.pipeline(`mesh-${kind}`, () => this.device.createRenderPipeline({
+      label: 'mesh',
+      layout: this.meshPipeLayout,
+      vertex: {
+        module: this.module(MESH_WGSL, 'mesh'), entryPoint: 'vs',
+        buffers: [{
+          arrayStride: 36,
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: 'float32x3' },
+            { shaderLocation: 1, offset: 12, format: 'float32x3' },
+            { shaderLocation: 2, offset: 24, format: 'float32x2' },
+            { shaderLocation: 3, offset: 32, format: 'unorm8x4' },
+          ],
+        }],
+      },
+      fragment: {
+        module: this.module(MESH_WGSL, 'mesh'), entryPoint: 'fs',
+        targets: [{
+          format: this.format,
+          blend: transparent ? { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } : undefined,
+          writeMask: kind === 'depth' ? 0 : GPUColorWrite.ALL,
+        }],
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: DEPTH, depthWriteEnabled: !transparent, depthCompare: transparent ? 'less-equal' : 'less' },
+      multisample: { count: MSAA },
+    }));
+  }
+
+  private materialBG(m: MaterialDef, tex: GPUTexture | null, own: { destroy(): void }[]): GPUBindGroup {
+    const ub = this.device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.device.queue.writeBuffer(ub, 0, materialUniform(m, !!tex));
+    own.push(ub);
+    return this.device.createBindGroup({ layout: this.matLayout, entries: [
+      { binding: 0, resource: { buffer: ub } },
+      { binding: 1, resource: (tex ?? this.whiteTex).createView() },
+      { binding: 2, resource: this.matSampler },
+    ] });
+  }
+
   setMesh(mesh: MeshData | null) {
     this.meshVB?.destroy();
     this.meshIB?.destroy();
+    for (const r of this.meshRes) r.destroy();
+    this.meshRes = [];
     this.meshVB = this.meshIB = null;
     this.meshCount = 0;
+    this.meshParts = [];
+    const gen = ++this.meshGen;
     if (!mesh) return;
     const nv = mesh.positions.length / 3;
-    const inter = new Float32Array(nv * 6);
+    const ap = mesh.appearance;
+    // interleaved: position f32×3, normal f32×3, uv f32×2, colour unorm8×4 (36 bytes)
+    const buf = new ArrayBuffer(nv * 36);
+    const f = new Float32Array(buf), c = new Uint8Array(buf);
     for (let i = 0; i < nv; i++) {
-      inter.set(mesh.positions.subarray(3 * i, 3 * i + 3), 6 * i);
-      inter.set(mesh.normals.subarray(3 * i, 3 * i + 3), 6 * i + 3);
+      const o = 9 * i;
+      f[o] = mesh.positions[3 * i]; f[o + 1] = mesh.positions[3 * i + 1]; f[o + 2] = mesh.positions[3 * i + 2];
+      f[o + 3] = mesh.normals[3 * i]; f[o + 4] = mesh.normals[3 * i + 1]; f[o + 5] = mesh.normals[3 * i + 2];
+      if (ap) { f[o + 6] = ap.uvs[2 * i]; f[o + 7] = ap.uvs[2 * i + 1]; }
+      const cb = 36 * i + 32;
+      if (ap) c.set(ap.colors.subarray(4 * i, 4 * i + 4), cb);
+      else c.fill(255, cb, cb + 4);
     }
-    this.meshVB = this.device.createBuffer({ size: inter.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
-    this.device.queue.writeBuffer(this.meshVB, 0, inter);
+    this.meshVB = this.device.createBuffer({ size: buf.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+    this.device.queue.writeBuffer(this.meshVB, 0, buf);
     this.meshIB = this.device.createBuffer({ size: Math.ceil(mesh.indices.byteLength / 4) * 4, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
     this.device.queue.writeBuffer(this.meshIB, 0, mesh.indices);
     this.meshCount = mesh.indices.length;
+    if (!ap) {
+      this.meshParts = [{ start: 0, count: this.meshCount, bg: this.presetMatBG, blend: false }];
+      return;
+    }
+    // draw with factor-only materials straight away; swap textures in as they finish uploading
+    const blend = (m: MaterialDef) => m.alphaMode === 2;
+    const bgs = ap.materials.map((m) => this.materialBG(m, null, this.meshRes));
+    this.meshParts = ap.parts.map((p) => ({ start: p.start, count: p.count, bg: bgs[p.material], blend: blend(ap.materials[p.material]) }));
+    const uploads = new Map<TextureImage, Promise<GPUTexture | null>>();
+    ap.materials.forEach((m, k) => {
+      if (!m.map) return;
+      const key = m.map;
+      if (!uploads.has(key)) {
+        uploads.set(key, textureFromImage(this.device, key, m.flipY).catch((e) => {
+          console.warn('texture upload failed', e);
+          return null;
+        }));
+      }
+      uploads.get(key)!.then((tex) => {
+        if (!tex) return;
+        if (gen !== this.meshGen) { tex.destroy(); return; }
+        if (!this.meshRes.includes(tex)) this.meshRes.push(tex);
+        const bg = this.materialBG(m, tex, this.meshRes);
+        for (let j = 0; j < ap.parts.length; j++) if (ap.parts[j].material === k) this.meshParts[j].bg = bg;
+      });
+    });
   }
 
   /** Re-seed all tracers (after reset / geometry change). */
@@ -499,7 +601,7 @@ export class RendererGPU {
     const mf = new Float32Array(mu), mi = new Uint32Array(mu);
     mf.set(s.mesh.model, 0);
     mf.set(s.mesh.normalMatrix, 16);
-    mi[32] = s.mesh.mode === 'cp' ? 1 : 0; mi[33] = s.mesh.cmap; mi[34] = s.mesh.useMean ? 1 : 0; mi[35] = is2D ? 1 : 0;
+    mi[32] = s.mesh.mode === 'cp' ? 1 : s.mesh.mode === 'tex' ? 2 : 0; mi[33] = s.mesh.cmap; mi[34] = s.mesh.useMean ? 1 : 0; mi[35] = is2D ? 1 : 0;
     mf[36] = s.mesh.cpMin; mf[37] = s.mesh.cpMax; mf[38] = s.mesh.opacity;
     d.queue.writeBuffer(this.meshU, 0, mu);
     // slice
@@ -581,27 +683,35 @@ export class RendererGPU {
 
     // mesh: opaque bodies go before the slice, see-through ones after it
     const drawMesh = (wantTransparent: boolean) => {
-      const transparent = s.mesh.opacity < 0.999;
-      if (transparent === wantTransparent && !SKIP.has('mesh') && s.mesh.visible && this.meshVB && this.meshCount) {
-        pass.setPipeline(this.pipeline(`mesh${transparent ? 't' : ''}`, () => this.device.createRenderPipeline({
-          label: 'mesh',
-          layout: this.meshPipeLayout,
-          vertex: {
-            module: this.module(MESH_WGSL, 'mesh'), entryPoint: 'vs',
-            buffers: [{ arrayStride: 24, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 12, format: 'float32x3' }] }],
-          },
-          fragment: {
-            module: this.module(MESH_WGSL, 'mesh'), entryPoint: 'fs',
-            targets: [{ format: this.format, blend: transparent ? { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } : undefined }],
-          },
-          primitive: { topology: 'triangle-list', cullMode: 'none' },
-          depthStencil: { format: DEPTH, depthWriteEnabled: !transparent, depthCompare: 'less' },
-          multisample: { count: MSAA },
-        })));
-        pass.setBindGroup(1, this.meshBG);
-        pass.setVertexBuffer(0, this.meshVB);
-        pass.setIndexBuffer(this.meshIB!, 'uint32');
-        pass.drawIndexed(this.meshCount);
+      if (SKIP.has('mesh') || !s.mesh.visible || !this.meshVB || !this.meshCount) return;
+      const faded = s.mesh.opacity < 0.999;
+      // Cp / studio: one draw; materials: one per part, glass after the opaque scene
+      const parts = s.mesh.mode === 'tex' ? this.meshParts : [{ start: 0, count: this.meshCount, bg: this.presetMatBG, blend: false }];
+      const run = (kind: 'opaque' | 'blend' | 'depth', keep: (p: (typeof parts)[number]) => boolean) => {
+        let bound = false;
+        for (const part of parts) {
+          if (!keep(part)) continue;
+          if (!bound) {
+            pass.setPipeline(this.meshPipeline(kind));
+            pass.setBindGroup(1, this.meshBG);
+            pass.setVertexBuffer(0, this.meshVB);
+            pass.setIndexBuffer(this.meshIB!, 'uint32');
+            bound = true;
+          }
+          pass.setBindGroup(2, part.bg);
+          pass.drawIndexed(part.count, 1, part.start);
+        }
+      };
+      if (!wantTransparent) {
+        if (!faded) run('opaque', (p) => !p.blend);
+      } else if (faded) {
+        // a see-through body blends only its nearest surface: lay down its depth first, glass last
+        run('depth', (p) => !p.blend);
+        run('blend', (p) => !p.blend);
+        run('blend', (p) => p.blend);
+      } else {
+        // glass: behind it the opaque body is already drawn; far panes may show through near ones
+        run('blend', (p) => p.blend);
       }
     };
     drawMesh(false);

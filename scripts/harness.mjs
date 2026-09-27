@@ -12,7 +12,7 @@ const args = process.argv.slice(2);
 const custom = args.find((a) => a.startsWith('--case='));
 const query = custom
   ? custom.slice(2)
-  : `case=freestream,voxcheck,cylinder${args.includes('--full') ? ',sphere' : ''}&valscale=0.5`;
+  : `case=freestream,voxcheck,texload,cylinder${args.includes('--full') ? ',sphere' : ''}&valscale=0.5`;
 
 // no HMR / file watching: editing sources while a long run is in progress must not restart it
 const server = await createServer({ server: { port: 0, hmr: false, watch: null }, logLevel: 'error' });

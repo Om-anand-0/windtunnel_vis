@@ -82,7 +82,8 @@ export interface Settings {
   qContour: boolean;
 
   bodyOn: boolean;
-  surface: 'lit' | 'cp';
+  /** body shading: pressure map, neutral studio grey, or the model's own materials */
+  surface: 'lit' | 'cp' | 'tex';
   surfaceMean: boolean;
 
   particlesOn: boolean;

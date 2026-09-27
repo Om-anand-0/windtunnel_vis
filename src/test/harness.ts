@@ -3,7 +3,9 @@ import { CASES } from '../analysis/validation';
 import { SolverGPU } from '../solver/SolverGPU';
 import { VoxelizerGPU } from '../voxelize/VoxelizerGPU';
 import { buildPreset } from '../voxelize/presets';
-import { gridWheels, placementMatrix } from '../voxelize/mesh';
+import { gridWheels, normalizeMesh, placementMatrix } from '../voxelize/mesh';
+import { loadModelFiles } from '../voxelize/loaders';
+import { texturedCarGlb } from './texfixture';
 
 const out = document.getElementById('out')!;
 const log = (s: string) => { out.textContent += '\n' + s; console.log(s); };
@@ -34,6 +36,30 @@ async function main() {
       results.push({ id: 'vox' + dims.nz, name, passed });
       s.destroy();
     }
+  }
+  if (which.includes('texload')) {
+    // upload path with materials: a real .glb with a texture, glass, tyres and lamps
+    const m = await loadModelFiles([await texturedCarGlb()]);
+    const ap = m.raw.appearance;
+    const mats = ap?.materials ?? [];
+    const withMap = mats.filter((x) => x.map);
+    const glass = mats.filter((x) => x.alphaMode === 2);
+    const lit = mats.filter((x) => x.emissive.some((e) => e > 0.5));
+    let uvOk = !!ap, covered = 0;
+    if (ap) {
+      for (const u of ap.uvs) if (!(u >= -1e-4 && u <= 1 + 1e-4)) uvOk = false;
+      for (const p of ap.parts) covered += p.count;
+    }
+    const mesh = normalizeMesh(m.raw, { up: m.up });
+    const dims = { nx: 96, ny: 48, nz: 48 };
+    const s = new SolverGPU(g.device, dims, { u: 0.05, nu: 0.01, cs: 0.1, ground: 'noslip', sides: 'freeslip', spongeNu: 0, spongeStart: 0.9, emaAlpha: 0 });
+    const pl = placementMatrix(mesh, dims, { mode: 'ground', lengthFrac: 1 / 3, diamFrac: 0.3, xFrac: 0.35, yawDeg: 0, pitchDeg: 0, rideCells: 0 });
+    const info = await new VoxelizerGPU(g.device).voxelize(s, mesh, pl.matrix.elements);
+    s.destroy();
+    const passed = !!ap && ap.textured && mats.length === 4 && withMap.length === 1 && (withMap[0].map!.width === 256) && glass.length === 1
+      && lit.length === 1 && uvOk && covered === m.raw.indices.length && !!mesh.appearance && info.solidCells > 0;
+    log(`texload: ${m.triangles} tris, ${mats.length} materials (${withMap.length} textured, ${glass.length} glass, ${lit.length} emissive), uv in [0,1]: ${uvOk}, parts cover ${covered}/${m.raw.indices.length} indices, voxels ${info.solidCells}, missing [${m.missing}]`);
+    results.push({ id: 'texload', name: 'Textured .glb upload (materials)', passed });
   }
   if (which.includes('vox')) {
     const vox = new VoxelizerGPU(g.device);

@@ -9,9 +9,11 @@ and lift coefficients from momentum exchange on the body surface.
 ![3D mode](docs/screenshot-3d.png)
 
 * **WebGPU compute** (D2Q9 2D and D3Q19 3D) with a **WebGL2 fragment-shader fallback** (2D only)
-* Upload any **.glb / .gltf / .obj / .stl**. It is voxelized **on the GPU**, auto-centred, scaled to ⅓ of the
-  tunnel length and set on the floor. Procedural presets: sedan, sports car, SUV/van, truck + trailer,
-  open-wheel racer, and a sphere and a cylinder for validation
+* Upload any **.glb / .gltf / .obj / .stl** (Draco- and meshopt-compressed .glb too). It is voxelized
+  **on the GPU**, auto-centred, scaled to ⅓ of the tunnel length and set on the floor. The model keeps
+  its **own paint, textures and glass** for display (*Body surface → Shading → Materials*).
+  Procedural presets: sedan, sports car, SUV/van, truck + trailer, open-wheel racer, and a sphere and
+  a cylinder for validation
 * Yaw (crosswind), pitch and ride height, a moving belt (rolling road) with **rotating wheels**, wind
   speed → Reynolds number
 * **Interpolated (Bouzidi) walls** from the true surface distance, and **FP16 population storage**
@@ -69,6 +71,8 @@ If 3D runs below about 12 fps, the grid is reduced automatically and eventually 
 | Screenshot | `P` (PNG with burned-in legend and numbers). "Record video" saves WebM |
 | Smoke rake / streamline seeds | drag the yellow handle in the viewport |
 | Several smoke streams at once (3D) | **Smoke & streamlines → Rake lines** (1–9 parallel rakes) and **Line spacing**. A vertical rake repeats across the width, and a horizontal one at different heights |
+| Show a model's own look | *Body surface → Shading → Materials*: base-colour textures, paint colour, metal/roughness, emissive lights and see-through glass from the file. *Cp heatmap* and *Studio* stay available |
+| Models with side files | select or drop everything together: a `.gltf` with its `.bin` and images, or an `.obj` with its `.mtl` and textures. Files are matched by name; anything missing is listed in a warning |
 | Probes | *Probes → Place probe*, then click on the slice. Traces appear in the right panel |
 | Compare / sweep | *Pin* (next to the C_D chart) or *Camera & export → Studies* |
 | Export | *Export CSV* (coefficients + probes), *Export flow field (.vtk)*, *Record GIF / video* |
@@ -203,6 +207,10 @@ C_D ≈ 0.5–0.8 on the moving belt and 0.45–0.65 on a fixed floor.
   not supported, so use a self-contained `.glb`.
 * **Precision.** In FP16 mode the populations are half precision, as are the field textures used for
   rendering. Arithmetic is always FP32. Switch *Storage* to FP32 for reference runs.
+* **Materials mode is a display approximation.** It uses the base-colour texture and the metal,
+  roughness, emissive and opacity factors, lit by a fixed studio environment. Normal, roughness and
+  occlusion maps, KTX2/Basis textures and clear-coat are ignored, and textures are capped at 2048 px.
+  The flow only sees the shape, so appearance never affects the aerodynamics.
 
 ## Tests and CI
 
