@@ -240,3 +240,21 @@ table.metrics td:first-child { color: var(--dim); width: 38%; }
 .tour-step { font: 11px var(--mono); color: var(--faint); }
 .tour-btns { display: flex; justify-content: flex-end; gap: 8px; }
 .tour-btns button { background: var(--panel2); border: 1px solid var(--line2); border-radius: 6px; padding: 5px 12px; cursor: pointer; color: var(--text); }
+
+/* ---------------------------------------------------------------- studies */
+.modal-card.wide { width: min(980px, 96vw); }
+.modal-card h3 { font-size: 14px; margin: 18px 0 8px; }
+.pins-t th { text-align: left; font-weight: 500; color: var(--faint); font-size: 11px; padding: 4px 6px 4px 0; }
+.pins-t td { vertical-align: middle; }
+table.pins-t td:first-child { width: 90px; }
+table.pins-t td.mono { white-space: nowrap; }
+table.pins-t td:nth-child(2) { width: 34%; color: var(--text); }
+.pins-t img.thumb { width: 84px; border-radius: 4px; display: block; }
+.pins-t button { background: var(--panel2); border: 1px solid var(--line2); border-radius: 5px; color: var(--text); cursor: pointer; padding: 2px 7px; margin-right: 3px; }
+.sw-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin-bottom: 6px; }
+.sw-f { display: flex; flex-direction: column; gap: 3px; }
+.sw-f select { width: 160px; }
+input.num { width: 76px; background: var(--panel2); border: 1px solid var(--line2); border-radius: 6px; padding: 5px 6px; color: var(--text); }
+.sw-row > button { background: rgba(255, 209, 102, 0.12); border: 1px solid rgba(255, 209, 102, 0.4); color: var(--accent); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+.chart-t button.pin { margin-left: 6px; background: var(--panel); border: 1px solid var(--line2); color: var(--dim); border-radius: 4px; font-size: 10.5px; padding: 0 6px; cursor: pointer; }
+.chart-t button.pin:hover { color: var(--accent); border-color: rgba(255, 209, 102, 0.5); }

@@ -50,7 +50,9 @@ export class Hud {
       h('div', { class: 'hud-title' }, 'Aerodynamics'),
       h('div', { class: 'bigrow' }, big('C_D', 'cd', 'drag'), big('C_L', 'cl', 'lift'), big('C_S', 'cs', 'side')),
     );
-    const chartBox = h('div', { class: 'chartbox' }, h('div', { class: 'chart-t' }, h('span', {}, 'C_D history'), h('span', { class: 'dim' }, 'avg ─ inst ···')));
+    const pinBtn = h('button', { class: 'pin', 'data-tip': 'Pin the current result to the Studies table for A/B comparison' }, 'Pin');
+    pinBtn.addEventListener('click', () => this.app.studies.pinCurrent());
+    const chartBox = h('div', { class: 'chartbox' }, h('div', { class: 'chart-t' }, h('span', {}, 'C_D history'), h('span', { class: 'dim' }, 'avg ─ inst ··· ', pinBtn)));
     root.append(chartBox);
     this.chart = new LineChart(chartBox, 96);
     this.chart.xLabel = 't·U/L';
@@ -155,8 +157,8 @@ export class Hud {
     e.area.textContent = `${r.frontalM2.toFixed(2)} m²`;
     e.block.textContent = `${(r.blockage * 100).toFixed(1)} %`;
     e.block.classList.toggle('warnv', r.blockage > 0.15);
-    if (r.convTime < 1) {
-      e.cdSub.textContent = `settling… ${r.convTime.toFixed(2)} / 1`;
+    if (a.settleLeft > 0) {
+      e.cdSub.textContent = `settling… ${a.settleLeft.toFixed(2)}`;
     } else if (isFinite(r.cdSE)) {
       e.cdSub.textContent = r.converged ? `±${r.cdSE.toFixed(3)} · converged` : `±${r.cdSE.toFixed(3)} · averaging ${r.avgSpan.toFixed(1)}/4`;
     } else {

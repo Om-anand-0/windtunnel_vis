@@ -22,6 +22,13 @@ export class Capture {
     this.shotPending = true;
   }
 
+  private thumbWaiters: { w: number; res: (url: string) => void }[] = [];
+
+  /** Small JPEG of the next frame (for pinned results). */
+  thumbnail(w = 240): Promise<string> {
+    return new Promise((res) => this.thumbWaiters.push({ w, res }));
+  }
+
   toggleRecording() {
     if (this.recording) {
       this.rec?.stop();
@@ -82,6 +89,16 @@ export class Capture {
   }
 
   afterFrame() {
+    if (this.thumbWaiters.length) {
+      const src = this.app.backend.canvas;
+      for (const t of this.thumbWaiters.splice(0)) {
+        const c = document.createElement('canvas');
+        c.width = t.w;
+        c.height = Math.round((t.w * src.height) / Math.max(src.width, 1));
+        c.getContext('2d')!.drawImage(src, 0, 0, c.width, c.height);
+        t.res(c.toDataURL('image/jpeg', 0.8));
+      }
+    }
     if (this.gif && performance.now() >= this.gif.next) {
       const g = this.gif;
       g.next += 80;

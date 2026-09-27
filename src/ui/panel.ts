@@ -119,19 +119,19 @@ export class Panel {
     const flow = section(root, 'Flow');
     this.ctl.speed = slider(flow, {
       label: 'Wind speed', min: 10, max: 300, step: 1, value: s.speedKmh, format: (v) => `${v.toFixed(0)} km/h`,
-      onInput: (v) => { s.speedKmh = v; app.updateFlow(); this.updateHints(); },
+      onInput: (v) => { s.speedKmh = v; app.flowChanged(); this.updateHints(); },
     });
     this.ctl.nuAir = slider(flow, {
       label: 'Air viscosity ν', min: 0.5, max: 5, step: 0.05, value: s.nuAir, format: (v) => `${v.toFixed(2)}·10⁻⁵ m²/s`,
-      onInput: (v) => { s.nuAir = v; app.updateFlow(); this.updateHints(); },
+      onInput: (v) => { s.nuAir = v; app.flowChanged(); this.updateHints(); },
     });
     this.ctl.reOn = toggle(flow, {
       label: 'Override simulated Re', value: s.reOverrideOn,
-      onChange: (v) => { s.reOverrideOn = v; app.updateFlow(); this.updateHints(); this.sync(); },
+      onChange: (v) => { s.reOverrideOn = v; app.flowChanged(); this.updateHints(); this.sync(); },
     });
     this.ctl.re = slider(flow, {
       label: 'Re (sim)', min: 20, max: 200000, step: 1, value: s.reOverride, log: true, format: (v) => formatRe(v),
-      onInput: (v) => { s.reOverride = v; app.updateFlow(); this.updateHints(); },
+      onInput: (v) => { s.reOverride = v; app.flowChanged(); this.updateHints(); },
     });
     this.ctl.ground = select<string>(flow, {
       label: 'Ground',
@@ -141,7 +141,7 @@ export class Panel {
         { value: 'freeslip', label: 'Free-slip (symmetry)' },
       ],
       value: s.ground,
-      onChange: (v) => { s.ground = v as typeof s.ground; },
+      onChange: (v) => { s.ground = v as typeof s.ground; app.flowChanged(); },
     });
     this.ctl.les = slider(flow, {
       label: 'Smagorinsky Cₛ', min: 0, max: 0.3, step: 0.01, value: s.lesCs, format: (v) => v.toFixed(2),
@@ -263,6 +263,7 @@ export class Panel {
       },
       { label: 'Reset settings', onClick: () => { clearSaved(); location.href = location.pathname; } },
     ]);
+    buttonRow(cam, [{ label: 'Studies: compare & sweep…', onClick: () => app.studies.open(), cls: 'wide' }]);
     buttonRow(cam, [{ label: 'Validation suite…', onClick: () => app.validation.open(), cls: 'wide accent' }]);
 
     for (const [k, tip] of Object.entries(PANEL_TIPS)) if (this.ctl[k]) this.ctl[k].el.dataset.tip = tip;

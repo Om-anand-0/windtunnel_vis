@@ -71,6 +71,7 @@ export const BUTTON_TIPS: [string, string][] = [
   ['Export flow field', 'Save velocity, mean velocity, vorticity, Cp and Q as a VTK file for ParaView/VisIt (3D grids are sub-sampled to ≈1 M points).'],
   ['Copy link', 'Copy a URL that reproduces the current settings and camera view — paste it to share exactly what you see.'],
   ['Reset settings', 'Forget the saved settings (they are remembered between visits) and reload with the defaults.'],
+  ['Studies', 'Pin results for A/B comparison (difference vs. a baseline, restore any configuration) and run automatic sweeps of yaw, speed, ride height or pitch.'],
   ['Validation', 'Run the physics checks: free-stream uniformity, cylinder vortex shedding (Strouhal number) and sphere drag against published data.'],
 ];
 

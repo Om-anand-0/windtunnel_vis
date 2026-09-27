@@ -12,6 +12,7 @@ import { defaultSettings, FIELDS, GRID_2D, GRID_3D, Quality, Settings } from './
 import { Capture } from './ui/capture';
 import { Hud } from './ui/hud';
 import { Panel } from './ui/panel';
+import { Studies } from './ui/studies';
 import { maybeStartTour } from './ui/tour';
 import { ValidationPanel } from './ui/validationPanel';
 import { toast } from './ui/widgets';
@@ -69,6 +70,7 @@ export class App {
   panel!: Panel;
   hud!: Hud;
   validation!: ValidationPanel;
+  studies!: Studies;
   capture!: Capture;
 
   mesh: MeshData | null = null;
@@ -145,6 +147,7 @@ export class App {
     this.panel = new Panel(this, document.getElementById('panel')!);
     this.hud = new Hud(this, document.getElementById('hud')!, document.getElementById('topbar')!);
     this.validation = new ValidationPanel(this);
+    this.studies = new Studies(this);
     this.capture = new Capture(this);
     this.setupRakeDrag();
     await this.rebuildSolver();
@@ -286,6 +289,8 @@ export class App {
     this.framesSinceReset = 0;
     this.updateFlow();
     this.resetCoefficients();
+    // the new geometry needs about a convective time to wash its transient out
+    this.avgStart = Math.max(this.avgStart, this.clock + 1);
     this.backend.refillParticles();
   }
 
@@ -319,6 +324,8 @@ export class App {
 
   resetFlow() {
     this.backend.reset();
+    this.clock = 0;
+    this.avgStart = 1;
     this.cur = { U: this.flow.U, nu: this.flow.nu };
     this.framesSinceReset = 0;
     this.resetCoefficients();
@@ -372,15 +379,16 @@ export class App {
     const U = this.cur.U;
     const area = Math.max(this.vinfo.frontal, 1);
     const c = coefficients(st.fx, st.fy, st.fz, U, area, st.rhoRef);
-    const tConv = (st.step * U) / this.Lcells;
+    // the sample was taken a little before now (async readback): back-date it on the clock
+    const tConv = this.clock - (Math.max(0, this.backend.stepCount - st.step) * U) / this.Lcells;
     // averaging window ~1.5 convective times
     const dt = this.lastSampleStep ? st.step - this.lastSampleStep : 0;
     this.lastSampleStep = st.step;
     const k = dt > 0 ? 1 - Math.exp(-(dt * U) / (1.5 * this.Lcells)) : 0.05;
     this.cdAvg.k = this.clAvg.k = this.csAvg.k = Math.min(Math.max(k, 0.002), 1);
     this.cdInst = c.cd;
-    // the first convective time is the start-up transient: plot it, but keep it out of the average
-    if (tConv < 1) {
+    // start-up (and post-change) transients are plotted but kept out of the averages
+    if (tConv < this.avgStart) {
       this.cdSeries.push(tConv, c.cd);
       return;
     }
@@ -395,6 +403,28 @@ export class App {
     this.clAvgSeries.push(tConv, this.clAvg.value);
   };
   private lastSampleStep = 0;
+  /** convective time t·U/L since the last reset, accumulated per frame (robust to U changes) */
+  clock = 0;
+  /** samples before this clock value are transients and excluded from the averages */
+  private avgStart = 1;
+
+  /** Call after any change that alters the flow (speed, viscosity, Re, floor, LES). */
+  flowChanged() {
+    this.updateFlow();
+    this.resetCoefficients();
+    this.avgStart = Math.max(this.avgStart, this.clock + 0.7);
+  }
+
+  /** convective times left before averaging (re)starts */
+  get settleLeft() {
+    return Math.max(0, this.avgStart - this.clock);
+  }
+
+  /** Mean ± standard error of the coefficients sampled since clock value t0. */
+  statsSince(t0: number) {
+    const w = (s: Series) => windowStats(s.t, s.v, Math.max(0, (s.t[s.t.length - 1] ?? 0) - t0));
+    return { cd: w(this.raw.cd), cl: w(this.raw.cl), cs: w(this.raw.cs) };
+  }
   private cdInst = NaN;
   rhoRef = 1;
 
@@ -415,7 +445,7 @@ export class App {
       stepsPerFrame: this.paused ? 0 : Math.round(this.stepsAuto * this.s.simSpeed),
       fps: this.fps,
       mlups: (this.backend.cells * (this.fixedSpf || Math.round(this.stepsAuto * this.s.simSpeed)) * this.fps) / 1e6,
-      convTime: (this.backend.stepCount * this.cur.U) / this.Lcells,
+      convTime: this.clock,
       maxMach: this.lastStats ? this.lastStats.maxU * Math.sqrt(3) : 0,
       blockage,
     };
@@ -543,7 +573,7 @@ export class App {
     const data = this.backend.probeData();
     const U = Math.max(this.cur.U, 1e-6);
     const rhoRef = this.lastStats?.rhoRef ?? 1;
-    const t = (this.backend.stepCount * this.cur.U) / this.Lcells;
+    const t = this.clock;
     data.forEach((d, i) => {
       const p = this.probes[i];
       if (!p) return;
@@ -744,7 +774,7 @@ export class App {
     this.cur.U += (this.flow.U - this.cur.U) * k;
     // start-up damping: extra viscosity for the first ~convective time damps the acoustic
     // transient of the impulsive start, then decays away
-    const tConv = (this.backend.stepCount * this.cur.U) / this.Lcells;
+    const tConv = this.clock;
     const nuTarget = Math.min(this.flow.nu * (1 + 12 * Math.exp(-tConv / 0.25)), 0.08);
     this.cur.nu = Math.exp(Math.log(this.cur.nu) + (Math.log(nuTarget) - Math.log(this.cur.nu)) * 0.25);
 
@@ -752,6 +782,7 @@ export class App {
     if (!this.s.paused) steps = this.fixedSpf || Math.max(1, Math.round(this.stepsAuto * this.s.simSpeed));
     else if (this.stepRequest) { steps = this.stepRequest; this.stepRequest = 0; }
 
+    this.clock += (steps * this.cur.U) / this.Lcells;
     const avgTime = 3 * this.Lcells / Math.max(this.cur.U, 1e-4);
     let ema = 1 - Math.exp(-Math.max(steps, 1) / avgTime);
     this.framesSinceReset++;
