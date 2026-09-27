@@ -245,6 +245,14 @@ headless test harness (`test.html?case=…`):
    the floor is now applied to the belt only.
 3. **Absolute pressure on tyre contact patches.** The momentum exchange now uses `fᵢ − wᵢρ₀`.
 4. **Non-rotating tyres on a moving belt** caused a 4× drag overshoot, which the contact patches fix.
+5. **Rotating wheels injected mass.** A tangential wall velocity on a voxel staircase has a net normal
+   component. That fed mass into the wheel cells every step, and the sedan's C_D went to 1.7–3.5. The
+   wheel links now subtract their mean momentum injection, `wᵢ·(Σ 6wⱼ cⱼ·u_w / Σ wⱼ)`, in both
+   streaming and the force. The belt contact then behaves, and C_D is 0.80 against 0.91 for
+   stationary wheels with contact patches (96×48×48 sedan on the moving belt).
+6. **Staircase walls doubled the drag of cars at coarse resolution.** Halfway bounce-back gave the same
+   sedan C_D ≈ 2.05. Bouzidi interpolated walls brought it to 0.91. They also moved the D = 10 sphere
+   from +23 % to +15 % of the reference.
 
-The headless harness runs the solver and voxelizer on SwiftShader (`npm run dev`, then open
-`test.html?case=freestream,cylinder,vox`).
+The headless harness runs the solver and voxelizer on SwiftShader. Use `npm test`, or
+`node scripts/harness.mjs "--case=…"`, or open `test.html?case=…` under `npm run dev`.
