@@ -222,6 +222,8 @@ export class Panel {
       onChange: (v) => { s.rakeOrient = v as 'vertical' | 'horizontal'; app.backend.refillParticles(); },
     });
     this.ctl.rakeSpan = slider(tr, { label: 'Rake span', min: 0.05, max: 1, step: 0.01, value: s.rakeSpan, format: (v) => `${(v * 100).toFixed(0)} %`, onInput: (v) => { s.rakeSpan = v; app.backend.refillParticles(); } });
+    this.ctl.rakeLines = slider(tr, { label: 'Rake lines', min: 1, max: 9, step: 1, value: s.rakeLines, format: (v) => String(v), onInput: (v) => { s.rakeLines = v; app.backend.refillParticles(); this.ctl.rakeGap?.setVisible(v > 1); } });
+    this.ctl.rakeGap = slider(tr, { label: 'Line spacing', min: 0.02, max: 0.3, step: 0.01, value: s.rakeGap, format: (v) => `${(v * 100).toFixed(0)} %`, onInput: (v) => { s.rakeGap = v; app.backend.refillParticles(); } });
     note(tr, 'Drag the yellow handle in the viewport to move the rake.');
 
     // ---------------------------------------------------------- probes
@@ -367,6 +369,10 @@ export class Panel {
     c.emitter.set(s.emitter);
     c.streamOn.set(s.streamOn);
     c.rakeOrient.setVisible(is3D);
+    c.rakeLines.set(s.rakeLines);
+    c.rakeLines.setVisible(is3D);
+    c.rakeGap.set(s.rakeGap);
+    c.rakeGap.setVisible(is3D && s.rakeLines > 1);
     c.isoOn.setEnabled(is3D);
     c.isoThr.set(s.isoThr);
     c.camera.set(s.camera);

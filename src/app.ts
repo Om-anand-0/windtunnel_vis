@@ -608,18 +608,22 @@ export class App {
 
   // ---------------------------------------------------------------- rake
 
-  rakeEndpoints(): { a: [number, number, number]; b: [number, number, number] } {
+  /** Rake segment through the handle, plus the offset between parallel rake lines (3D only). */
+  rakeEndpoints(): { a: [number, number, number]; b: [number, number, number]; d: [number, number, number]; lines: number } {
     const { nx, ny, nz } = this.dims;
     const s = this.s;
     const x = s.rakeX * nx;
     const z = this.is3D ? s.rakeZ * nz : 0.5;
     const y = s.rakeY * ny;
+    const lines = this.is3D ? Math.max(1, Math.round(s.rakeLines)) : 1;
+    // shrink the spacing so the outermost lines stay inside the tunnel
+    const gap = (c: number, n: number, lo: number) => (lines > 1 ? Math.min(s.rakeGap * n, (2 * Math.min(c - lo, n - lo - c)) / (lines - 1)) : 0);
     if (s.rakeOrient === 'horizontal' && this.is3D) {
       const half = (s.rakeSpan * nz) / 2;
-      return { a: [x, y, Math.max(1, z - half)], b: [x, y, Math.min(nz - 1, z + half)] };
+      return { a: [x, y, Math.max(1, z - half)], b: [x, y, Math.min(nz - 1, z + half)], d: [0, gap(y, ny, 0.5), 0], lines };
     }
     const half = (s.rakeSpan * ny) / 2;
-    return { a: [x, Math.max(0.5, y - half), z], b: [x, Math.min(ny - 1, y + half), z] };
+    return { a: [x, Math.max(0.5, y - half), z], b: [x, Math.min(ny - 1, y + half), z], d: [0, 0, gap(z, nz, 1)], lines };
   }
 
   private setupRakeDrag() {
@@ -768,7 +772,7 @@ export class App {
         width: 1.6,
         alpha: 0.9,
       },
-      rake: { a: rk.a, b: rk.b, visible: s.streamOn || (s.particlesOn && s.emitter === 'rake'), active: this.rakeActive },
+      rake: { a: rk.a, b: rk.b, d: rk.d, lines: rk.lines, visible: s.streamOn || (s.particlesOn && s.emitter === 'rake'), active: this.rakeActive },
       probes: this.probes.map((p) => ({ pos: p.pos, color: p.color })),
     };
   }

@@ -172,13 +172,13 @@ export class RendererGPU {
     this.probeBG = device.createBindGroup({ layout: probeLayout, entries: [{ binding: 0, resource: { buffer: this.probeU } }, { binding: 1, resource: { buffer: this.probeOut } }] });
     this.segBG = device.createBindGroup({ layout: this.layouts.seg, entries: [{ binding: 0, resource: { buffer: this.segBuf } }] });
 
-    this.partU = uni(80);
+    this.partU = uni(96);
     this.partPipe = device.createComputePipeline({
       label: 'particles',
       layout: device.createPipelineLayout({ bindGroupLayouts: [this.frameLayout, this.layouts.partC] }),
       compute: { module: device.createShaderModule({ code: PARTICLES_WGSL, label: 'particles' }), entryPoint: 'main' },
     });
-    this.slU = uni(64);
+    this.slU = uni(80);
     this.slPipe = device.createComputePipeline({
       label: 'streamlines',
       layout: device.createPipelineLayout({ bindGroupLayouts: [this.frameLayout, this.layouts.slC] }),
@@ -406,14 +406,15 @@ export class RendererGPU {
       const t = this.tracers!;
       const fill = this.needFill;
       if (P.advance && !fill) this.trailHead = (this.trailHead + 1) % t.trail;
-      const pu = new ArrayBuffer(80);
+      const pu = new ArrayBuffer(96);
       const u32 = new Uint32Array(pu);
       const f32 = new Float32Array(pu);
       u32[0] = t.count; u32[1] = t.trail; u32[2] = this.trailHead; u32[3] = P.emitter === 'rake' ? 1 : 0;
       f32[4] = P.steps; u32[5] = this.frameSeed++; f32[6] = P.maxAge; u32[7] = P.nozzles;
       f32.set([...s.rake.a, 0], 8);
       f32.set([...s.rake.b, 0], 12);
-      u32[16] = P.advance ? 1 : 0; u32[17] = fill ? 1 : 0;
+      u32[16] = P.advance ? 1 : 0; u32[17] = fill ? 1 : 0; u32[18] = s.rake.lines;
+      f32.set([...s.rake.d, 0], 20);
       d.queue.writeBuffer(this.partU, 0, pu);
       const cp = enc.beginComputePass({ label: 'particles' });
       cp.setPipeline(this.partPipe);
@@ -440,10 +441,12 @@ export class RendererGPU {
     }
     const SL = s.streamlines;
     if (SL.enabled && !SKIP.has('stream')) {
-      this.ensureStreamlines(SL.seeds, SL.points);
-      const su = new ArrayBuffer(64);
+      const nSeeds = SL.seeds * s.rake.lines;
+      this.ensureStreamlines(nSeeds, SL.points);
+      const su = new ArrayBuffer(80);
       const u32 = new Uint32Array(su), f32 = new Float32Array(su);
-      u32[0] = SL.seeds; u32[1] = SL.points; u32[2] = SL.useMean ? 1 : 0;
+      u32[0] = nSeeds; u32[1] = SL.points; u32[2] = SL.useMean ? 1 : 0; u32[3] = SL.seeds;
+      f32.set([...s.rake.d, 0], 16);
       f32.set([...s.rake.a, 0], 4);
       f32.set([...s.rake.b, 0], 8);
       f32[12] = SL.step;
@@ -454,7 +457,7 @@ export class RendererGPU {
       cp.setPipeline(this.slPipe);
       cp.setBindGroup(0, this.frameBG);
       cp.setBindGroup(1, this.slBG!);
-      cp.dispatchWorkgroups(Math.ceil(SL.seeds / 64));
+      cp.dispatchWorkgroups(Math.ceil(nSeeds / 64));
       cp.end();
     }
 
@@ -538,14 +541,20 @@ export class RendererGPU {
     });
     if (s.rake.visible) {
       const rc = s.rake.active ? [1.0, 0.85, 0.3, 1] : [1.0, 0.75, 0.2, 0.85];
-      seg(s.rake.a, s.rake.b, 3, rc);
+      const { a, b, d: off, lines } = s.rake;
+      const at = (p: number[], k: number) => [p[0] + off[0] * k, p[1] + off[1] * k, p[2] + off[2] * k];
+      const k0 = -0.5 * (lines - 1);
+      for (let l = 0; l < lines; l++) seg(at(a, k0 + l), at(b, k0 + l), 3, rc);
       const m = [(s.rake.a[0] + s.rake.b[0]) / 2, (s.rake.a[1] + s.rake.b[1]) / 2, (s.rake.a[2] + s.rake.b[2]) / 2];
+      // the bar that holds parallel lines together; the handle in its middle moves them all
+      if (lines > 1) seg(at(m, k0), at(m, -k0), 2, rc);
       // handle: a short thick dash in the middle
       const dir = [s.rake.b[0] - s.rake.a[0], s.rake.b[1] - s.rake.a[1], s.rake.b[2] - s.rake.a[2]];
       const dl = Math.hypot(dir[0], dir[1], dir[2]) || 1;
       const hl = Math.max(dl * 0.04, 2);
       seg([m[0] - (dir[0] / dl) * hl, m[1] - (dir[1] / dl) * hl, m[2] - (dir[2] / dl) * hl], [m[0] + (dir[0] / dl) * hl, m[1] + (dir[1] / dl) * hl, m[2] + (dir[2] / dl) * hl], 12, [1, 0.9, 0.4, 1]);
     }
+    if (segs.length > 128 * 12) segs.length = 128 * 12;
     this.segCount = segs.length / 12;
     if (this.segCount) d.queue.writeBuffer(this.segBuf, 0, new Float32Array(segs));
 
@@ -618,7 +627,7 @@ export class RendererGPU {
     if (SL.enabled && this.slRenderBG && !SKIP.has('stream')) {
       pass.setPipeline(this.pipeline(`stream-${overlayDepth}`, () => this.basicPipe('stream', STREAM_WGSL, this.layouts.stream, { blend: 'premul', depthWrite: false, depthCompare: overlayDepth })));
       pass.setBindGroup(1, this.slRenderBG);
-      pass.draw((SL.points - 1) * 6, SL.seeds);
+      pass.draw((SL.points - 1) * 6, SL.seeds * s.rake.lines);
     }
 
     // particle trails

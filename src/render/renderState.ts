@@ -65,7 +65,8 @@ export interface RenderState {
     width: number;
     alpha: number;
   };
-  rake: { a: [number, number, number]; b: [number, number, number]; visible: boolean; active: boolean };
+  /** base rake segment a→b, repeated `lines` times at offsets (k − (lines−1)/2)·d */
+  rake: { a: [number, number, number]; b: [number, number, number]; d: [number, number, number]; lines: number; visible: boolean; active: boolean };
   /** probe positions (grid coords) and marker colours */
   probes: { pos: [number, number, number]; color: [number, number, number] }[];
 }

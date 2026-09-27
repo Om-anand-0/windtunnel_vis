@@ -7,7 +7,8 @@ struct PU {
   steps: f32, seed: u32, maxAge: f32, nozzles: u32,
   rakeA: vec4<f32>,
   rakeB: vec4<f32>,
-  advance: u32, fill: u32, p0: u32, p1: u32,
+  advance: u32, fill: u32, lines: u32, p1: u32,
+  rakeD: vec4<f32>,
 };
 @group(1) @binding(0) var<uniform> P: PU;
 @group(1) @binding(1) var<storage, read_write> state: array<vec4<f32>>;
@@ -30,9 +31,11 @@ fn spawn() -> vec3<f32> {
   if (P.emitter == 0u) {
     return vec3<f32>(1.0 + rnd() * 2.0, 0.5 + rnd() * (d.y - 1.0), select(0.5 + rnd() * (d.z - 1.0), 0.5, is2D));
   }
-  let k = min(u32(rnd() * f32(P.nozzles)), P.nozzles - 1u);
-  let t = (f32(k) + 0.5) / f32(P.nozzles);
-  var p = mix(P.rakeA.xyz, P.rakeB.xyz, t);
+  let lines = max(P.lines, 1u);
+  let k = min(u32(rnd() * f32(P.nozzles * lines)), P.nozzles * lines - 1u);
+  let t = (f32(k % P.nozzles) + 0.5) / f32(P.nozzles);
+  let l = f32(k / P.nozzles) - 0.5 * f32(lines - 1u);
+  var p = mix(P.rakeA.xyz, P.rakeB.xyz, t) + P.rakeD.xyz * l;
   let j = vec3<f32>(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5) * 0.35;
   p += j;
   if (is2D) { p.z = 0.5; }
@@ -149,10 +152,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 export const STREAMLINES_WGSL = /* wgsl */ `
 ${FRAME_WGSL}
 struct SLU {
-  seeds: u32, points: u32, useMean: u32, bidir: u32,
+  seeds: u32, points: u32, useMean: u32, perLine: u32,
   rakeA: vec4<f32>,
   rakeB: vec4<f32>,
   h: f32, p0: f32, p1: f32, p2: f32,
+  rakeD: vec4<f32>,
 };
 @group(1) @binding(0) var<uniform> S: SLU;
 @group(1) @binding(1) var<storage, read_write> pts: array<vec4<f32>>;
@@ -173,7 +177,10 @@ fn outside(p: vec3<f32>) -> bool {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let s = gid.x;
   if (s >= S.seeds) { return; }
-  var p = mix(S.rakeA.xyz, S.rakeB.xyz, (f32(s) + 0.5) / f32(S.seeds));
+  // seeds are laid out line by line: perLine seeds on each parallel rake line
+  let per = max(S.perLine, 1u);
+  let l = f32(s / per) - 0.5 * f32(S.seeds / per - 1u);
+  var p = mix(S.rakeA.xyz, S.rakeB.xyz, (f32(s % per) + 0.5) / f32(per)) + S.rakeD.xyz * l;
   if (F.dims.w > 0.5) { p.z = 0.5; }
   var alive = true;
   let U = max(F.flow.x, 1e-5);

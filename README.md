@@ -68,6 +68,7 @@ If 3D runs below about 12 fps, the grid is reduced automatically and eventually 
 | Pause, single step, reset | `Space`, `.`, `R` |
 | Screenshot | `P` (PNG with burned-in legend and numbers). "Record video" saves WebM |
 | Smoke rake / streamline seeds | drag the yellow handle in the viewport |
+| Several smoke streams at once (3D) | **Smoke & streamlines → Rake lines** (1–9 parallel rakes) and **Line spacing**. A vertical rake repeats across the width, and a horizontal one at different heights |
 | Probes | *Probes → Place probe*, then click on the slice. Traces appear in the right panel |
 | Compare / sweep | *Pin* (next to the C_D chart) or *Camera & export → Studies* |
 | Export | *Export CSV* (coefficients + probes), *Export flow field (.vtk)*, *Record GIF / video* |

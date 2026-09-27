@@ -99,6 +99,10 @@ export interface Settings {
   rakeY: number;
   rakeZ: number;
   rakeSpan: number;
+  /** parallel copies of the rake (3D): across the width for a vertical rake, stacked in height for a horizontal one */
+  rakeLines: number;
+  /** spacing between rake lines, as a fraction of the tunnel width (vertical rake) or height (horizontal rake) */
+  rakeGap: number;
 
   isoOn: boolean;
   isoMode: 'q' | 'recirc';
@@ -160,6 +164,8 @@ export function defaultSettings(): Settings {
     rakeY: 0.22,
     rakeZ: 0.5,
     rakeSpan: 0.4,
+    rakeLines: 1,
+    rakeGap: 0.12,
     isoOn: true,
     isoMode: 'q',
     isoThr: 200,
