@@ -66,4 +66,6 @@ export interface RenderState {
     alpha: number;
   };
   rake: { a: [number, number, number]; b: [number, number, number]; visible: boolean; active: boolean };
+  /** probe positions (grid coords) and marker colours */
+  probes: { pos: [number, number, number]; color: [number, number, number] }[];
 }

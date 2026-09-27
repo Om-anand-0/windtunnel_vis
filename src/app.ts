@@ -1,15 +1,18 @@
 import * as THREE from 'three';
-import { coefficients, dragNewtons, Ema, Series } from './analysis/aero';
+import { coefficients, dragNewtons, Ema, Series, windowStats } from './analysis/aero';
 import { FlowMapping, mapFlow } from './analysis/units';
 import type { Backend } from './backend/types';
 import { CameraRig } from './render/camera';
 import { COLORMAPS } from './render/colormaps';
 import type { RenderState } from './render/renderState';
 import type { SolverStats } from './solver/types';
+import { csv, download, stamp, vtk } from './analysis/export';
+import { applyPartial, loadSaved, save, shareUrl } from './persist';
 import { defaultSettings, FIELDS, GRID_2D, GRID_3D, Quality, Settings } from './state';
 import { Capture } from './ui/capture';
 import { Hud } from './ui/hud';
 import { Panel } from './ui/panel';
+import { maybeStartTour } from './ui/tour';
 import { ValidationPanel } from './ui/validationPanel';
 import { toast } from './ui/widgets';
 import { LoadedModel } from './voxelize/loaders';
@@ -35,7 +38,29 @@ export interface AeroReadout {
   maxMach: number;
   /** frontal area / tunnel cross-section */
   blockage: number;
+  /** standard error of the windowed C_D mean */
+  cdSE: number;
+  /** averaging window actually covered (convective times) */
+  avgSpan: number;
+  converged: boolean;
+  /** C_D corrected for solid blockage (continuity): C_D·(1−ε)² */
+  cdCorrected: number;
 }
+
+export interface Probe {
+  pos: [number, number, number];
+  color: [number, number, number];
+  speed: Series;
+  cp: Series;
+  last: { speed: number; cp: number; cpMean: number; speedMean: number } | null;
+}
+
+const PROBE_COLORS: [number, number, number][] = [
+  [1, 0.42, 0.42], [0.35, 0.82, 1], [0.7, 0.55, 1], [0.45, 0.9, 0.55], [1, 0.62, 0.25], [1, 0.45, 0.8], [0.9, 0.9, 0.4], [0.6, 0.95, 0.95],
+];
+
+/** averaging window for the reported coefficients, in convective times L/U */
+const AVG_WINDOW = 4;
 
 export class App {
   readonly s: Settings = defaultSettings();
@@ -69,9 +94,11 @@ export class App {
   private revoxTimer = 0;
   private perfWatch = { t0: 0, frames: 0, active: false };
 
-  readonly cdSeries = new Series(900);
-  readonly cdAvgSeries = new Series(900);
-  readonly clAvgSeries = new Series(900);
+  readonly cdSeries = new Series(3000);
+  readonly cdAvgSeries = new Series(3000);
+  readonly clAvgSeries = new Series(3000);
+  /** raw post-warm-up samples used for the windowed means */
+  readonly raw = { cd: new Series(20000), cl: new Series(20000), cs: new Series(20000) };
   private cdAvg = new Ema(0.05);
   private clAvg = new Ema(0.05);
   private csAvg = new Ema(0.05);
@@ -79,12 +106,19 @@ export class App {
   private rakeActive = false;
   /** set once the user moves the Q threshold slider */
   isoThrUser = false;
+  private startCam: number[] | null = null;
 
   constructor(readonly backend: Backend) {
     this.rig = new CameraRig(backend.canvas, backend.kind === 'webgpu');
     const q = new URLSearchParams(location.search);
+    // a shared link reproduces a view exactly (defaults + URL); otherwise restore the last session
+    const shared = [...q.keys()].some((k) => k.startsWith('s.') || k === 'cam');
+    const saved = shared ? {} : loadSaved();
+    applyPartial(this.s, saved);
+    const fresh = !shared && Object.keys(saved).length === 0;
     if (q.get('mode') === '2d' || q.get('mode') === '3d') this.s.mode = q.get('mode') as '2d' | '3d';
     // WebGL2 fallback has no 3D solver
+    const forced2D = !backend.supports3D && this.s.mode === '3d';
     if (!backend.supports3D) this.s.mode = '2d';
     if (q.get('vehicle')) this.s.vehicle = q.get('vehicle')!;
     if (q.get('quality')) {
@@ -92,7 +126,9 @@ export class App {
       this.s.quality2D = v;
       this.s.quality3D = v;
     }
-    this.applyModeDefaults();
+    if (fresh || forced2D) this.applyModeDefaults();
+    this.startCam = q.get('cam')?.split(',').map(Number).filter((x) => isFinite(x)) ?? null;
+    window.addEventListener('beforeunload', () => save(this.s));
     // any setting can be overridden from the URL, e.g. ?s.field=3&s.isoOn=1 (shareable views)
     const rec = this.s as unknown as Record<string, unknown>;
     for (const [k, v] of q) {
@@ -112,6 +148,8 @@ export class App {
     this.capture = new Capture(this);
     this.setupRakeDrag();
     await this.rebuildSolver();
+    if (this.startCam?.length === 6) this.rig.setView(this.startCam.slice(0, 3), this.startCam.slice(3));
+    else setTimeout(maybeStartTour, 800);
     requestAnimationFrame(this.loop);
   }
 
@@ -293,6 +331,7 @@ export class App {
     this.cdAvg.reset();
     this.clAvg.reset();
     this.csAvg.reset();
+    for (const r of Object.values(this.raw)) r.clear();
   }
 
   step() {
@@ -348,6 +387,9 @@ export class App {
     this.cdAvg.push(c.cd);
     this.clAvg.push(c.cl);
     this.csAvg.push(c.cs);
+    this.raw.cd.push(tConv, c.cd);
+    this.raw.cl.push(tConv, c.cl);
+    this.raw.cs.push(tConv, c.cs);
     this.cdSeries.push(tConv, c.cd);
     this.cdAvgSeries.push(tConv, this.cdAvg.value);
     this.clAvgSeries.push(tConv, this.clAvg.value);
@@ -357,10 +399,16 @@ export class App {
   rhoRef = 1;
 
   readout(): AeroReadout {
-    const cd = this.cdAvg.value;
+    const w = (s: Series) => windowStats(s.t, s.v, AVG_WINDOW);
+    const sd = w(this.raw.cd), sl = w(this.raw.cl), ss = w(this.raw.cs);
+    const pick = (st: { mean: number }, ema: Ema) => (isFinite(st.mean) ? st.mean : ema.value);
+    const cd = pick(sd, this.cdAvg);
     const speed = this.s.speedKmh / 3.6;
+    const blockage = this.vinfo.frontal / (this.is3D ? this.dims.ny * this.dims.nz : this.dims.ny);
+    const converged = sd.span >= AVG_WINDOW * 0.75 && isFinite(sd.se) && sd.se < Math.max(0.02 * Math.abs(sd.mean), 0.005);
     return {
-      cd, cl: this.clAvg.value, cs: this.csAvg.value, cdInst: this.cdInst,
+      cd, cl: pick(sl, this.clAvg), cs: pick(ss, this.csAvg), cdInst: this.cdInst,
+      cdSE: sd.se, avgSpan: sd.span, converged, cdCorrected: cd * (1 - blockage) ** 2,
       frontalM2: this.frontalM2,
       dragN: dragNewtons(cd, speed, this.frontalM2),
       flow: this.flow,
@@ -369,7 +417,7 @@ export class App {
       mlups: (this.backend.cells * (this.fixedSpf || Math.round(this.stepsAuto * this.s.simSpeed)) * this.fps) / 1e6,
       convTime: (this.backend.stepCount * this.cur.U) / this.Lcells,
       maxMach: this.lastStats ? this.lastStats.maxU * Math.sqrt(3) : 0,
-      blockage: this.vinfo.frontal / (this.is3D ? this.dims.ny * this.dims.nz : this.dims.ny),
+      blockage,
     };
   }
 
@@ -387,6 +435,129 @@ export class App {
 
   get stabilityEvents() {
     return this.stab.events;
+  }
+
+  // ---------------------------------------------------------------- export
+
+  private metaLines(): string[] {
+    const d = this.dims, f = this.flow, r = this.readout();
+    return [
+      `windtunnel export ${new Date().toISOString()}`,
+      `vehicle=${this.presetInfo?.name ?? 'uploaded model'} length_m=${this.s.lengthM} speed_kmh=${this.s.speedKmh} yaw_deg=${this.s.yaw} pitch_deg=${this.s.pitch} ride_mm=${this.s.rideMm}`,
+      `solver=${this.is3D ? 'D3Q19' : 'D2Q9'} grid=${d.nx}x${d.ny}x${d.nz} L_cells=${this.Lcells.toFixed(1)} U_lattice=${this.cur.U.toFixed(4)} tau=${f.tau.toFixed(5)} ground=${this.s.ground} Cs=${this.s.lesCs}`,
+      `Re_real=${f.reReal.toExponential(3)} Re_sim=${f.reSim.toFixed(0)} dx_m=${f.dx.toExponential(4)} dt_s=${f.dt.toExponential(4)} frontal_m2=${this.frontalM2.toFixed(4)} blockage=${r.blockage.toFixed(4)}`,
+      `Cd=${r.cd.toFixed(4)} +- ${r.cdSE.toFixed(4)} Cl=${r.cl.toFixed(4)} Cs=${r.cs.toFixed(4)} converged=${r.converged}`,
+      't = convective time t*U/L',
+    ];
+  }
+
+  exportCSV() {
+    const r = this.raw;
+    // probe traces are merged in as extra columns (nearest sample in time) — one file, one download
+    const nearest = (ser: Series, t: number) => {
+      const ts = ser.t;
+      if (!ts.length) return NaN;
+      let lo = 0, hi = ts.length - 1;
+      while (hi - lo > 1) { const m = (lo + hi) >> 1; if (ts[m] < t) lo = m; else hi = m; }
+      const k = Math.abs(ts[lo] - t) < Math.abs(ts[hi] - t) ? lo : hi;
+      return Math.abs(ts[k] - t) < 0.05 ? ser.v[k] : NaN;
+    };
+    const header = ['t', 'cd', 'cl', 'cs'];
+    const meta = this.metaLines();
+    this.probes.forEach((p, k) => {
+      header.push(`P${k + 1}_speed_over_U`, `P${k + 1}_cp`);
+      meta.push(`P${k + 1} at (${this.probeMetres(p).map((x) => x.toFixed(3)).join(', ')}) m from the vehicle centre`);
+    });
+    const rows = r.cd.t.map((t, i) => {
+      const row: number[] = [t, r.cd.v[i], r.cl.v[i] ?? NaN, r.cs.v[i] ?? NaN];
+      for (const p of this.probes) row.push(nearest(p.speed, t), nearest(p.cp, t));
+      return row;
+    });
+    download(csv(header, rows, meta), `windtunnel-${stamp()}.csv`);
+  }
+
+  async exportVTK() {
+    toast('Reading the flow field back from the GPU…', 'info', 2500);
+    const f = await this.backend.exportFields(1_000_000);
+    const blob = vtk(f, { dx: this.flow.dx, U: Math.max(this.cur.U, 1e-6), L: this.Lcells, rhoRef: this.lastStats?.rhoRef ?? 1, title: this.metaLines().slice(1, 3).join(' | ') });
+    download(blob, `windtunnel-field-${f.dims.join('x')}-${stamp()}.vtk`);
+    toast(`Saved ${f.dims.join('×')} points${f.stride > 1 ? ` (every ${f.stride}th cell)` : ''} — open in ParaView`, 'info');
+  }
+
+  /** Link that reproduces the current settings and camera. */
+  shareLink(): string {
+    const c = this.rig.camera.position, t = this.rig.controls.target;
+    return shareUrl(this.s, { pos: [c.x, c.y, c.z], target: [t.x, t.y, t.z] });
+  }
+
+  // ---------------------------------------------------------------- probes
+
+  readonly probes: Probe[] = [];
+  placingProbe = false;
+
+  /** Put a probe where the click ray meets the slice plane (or the centre plane). */
+  private placeProbe(x: number, y: number, w: number, h: number) {
+    const { nx, ny, nz } = this.dims;
+    const ray = this.rig.ray(x, y, w, h);
+    const axis = this.is3D && this.s.sliceOn ? this.s.sliceAxis : 2;
+    const dimsArr = [nx, ny, nz];
+    const pos = this.is3D ? (this.s.sliceOn ? this.s.slicePos * dimsArr[axis] : nz / 2) : 0.5;
+    const n = new THREE.Vector3(axis === 0 ? 1 : 0, axis === 1 ? 1 : 0, axis === 2 ? 1 : 0);
+    const plane = new THREE.Plane(n, -pos);
+    const hit = new THREE.Vector3();
+    this.placingProbe = false;
+    this.backend.canvas.style.cursor = '';
+    if (!ray.intersectPlane(plane, hit) || hit.x < 0 || hit.y < 0 || hit.x > nx || hit.y > ny || (this.is3D && (hit.z < 0 || hit.z > nz))) {
+      toast('Click inside the tunnel on the slice plane to place a probe', 'warn');
+      this.panel.sync();
+      return;
+    }
+    if (!this.is3D) hit.z = 0.5;
+    const color = PROBE_COLORS[this.probes.length % PROBE_COLORS.length];
+    this.probes.push({ pos: [hit.x, hit.y, hit.z], color, speed: new Series(3000), cp: new Series(3000), last: null });
+    this.panel.sync();
+  }
+
+  startProbePlacement() {
+    if (this.probes.length >= 8) {
+      toast('Up to 8 probes — clear some first', 'warn');
+      return;
+    }
+    this.placingProbe = true;
+    this.backend.canvas.style.cursor = 'crosshair';
+  }
+
+  clearProbes() {
+    this.probes.length = 0;
+    this.panel.sync();
+  }
+
+  /** Probe position in metres from the vehicle centre (for display). */
+  probeMetres(p: Probe): [number, number, number] {
+    const dx = this.flow.dx;
+    const c = new THREE.Vector3().setFromMatrixPosition(this.meshMatrix);
+    return [(p.pos[0] - c.x) * dx, p.pos[1] * dx, this.is3D ? (p.pos[2] - c.z) * dx : 0];
+  }
+
+  private updateProbes() {
+    const data = this.backend.probeData();
+    const U = Math.max(this.cur.U, 1e-6);
+    const rhoRef = this.lastStats?.rhoRef ?? 1;
+    const t = (this.backend.stepCount * this.cur.U) / this.Lcells;
+    data.forEach((d, i) => {
+      const p = this.probes[i];
+      if (!p) return;
+      const sp = Math.hypot(d.inst[0], d.inst[1], d.inst[2]) / U;
+      const cp = (2 * (d.inst[3] - rhoRef)) / (3 * U * U);
+      const cpMean = (2 * (d.mean[3] - rhoRef)) / (3 * U * U);
+      const spMean = Math.hypot(d.mean[0], d.mean[1], d.mean[2]) / U;
+      p.last = { speed: sp, cp, cpMean, speedMean: spMean };
+      const lt = p.speed.t.length ? p.speed.t[p.speed.t.length - 1] : -1;
+      if (t > lt) {
+        p.speed.push(t, sp);
+        p.cp.push(t, cp);
+      }
+    });
   }
 
   // ---------------------------------------------------------------- rake
@@ -416,6 +587,12 @@ export class App {
     };
     const rakeVisible = () => this.s.streamOn || (this.s.particlesOn && this.s.emitter === 'rake');
     c.addEventListener('pointerdown', (e) => {
+      if (this.placingProbe && e.button === 0) {
+        const r = c.getBoundingClientRect();
+        this.placeProbe(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
+        e.stopImmediatePropagation();
+        return;
+      }
       if (!rakeVisible() || e.button !== 0) return;
       const r = c.getBoundingClientRect();
       const hp = handlePos();
@@ -546,6 +723,7 @@ export class App {
         alpha: 0.9,
       },
       rake: { a: rk.a, b: rk.b, visible: s.streamOn || (s.particlesOn && s.emitter === 'rake'), active: this.rakeActive },
+      probes: this.probes.map((p) => ({ pos: p.pos, color: p.color })),
     };
   }
 
@@ -609,7 +787,9 @@ export class App {
       }
     }
 
+    if (this.probes.length) this.updateProbes();
     if (this.frames % 6 === 0) this.hud.update();
+    if (this.frames % 180 === 0) save(this.s);
   };
 
   private degrade3D(fps: number) {

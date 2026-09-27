@@ -1,6 +1,7 @@
 import type { App } from '../app';
 import { colormapCSS, ColormapName } from '../render/colormaps';
 import { FIELDS } from '../state';
+import { download, stamp } from '../analysis/export';
 import { toast } from './widgets';
 
 /**
@@ -52,7 +53,46 @@ export class Capture {
     toast('Recording… press “Stop recording” to save', 'info');
   }
 
+  private gif: { frames: ImageData[]; canvas: HTMLCanvasElement; next: number; done: (on: boolean) => void } | null = null;
+
+  /** ~6 s animated GIF at 12.5 fps, max 720 px wide, encoded with gifenc (per-frame palettes). */
+  recordGif(state: (on: boolean) => void) {
+    if (this.gif) return;
+    const src = this.app.backend.canvas;
+    const scale = Math.min(1, 720 / src.width);
+    const c = document.createElement('canvas');
+    c.width = Math.round(src.width * scale) & ~1;
+    c.height = Math.round(src.height * scale) & ~1;
+    this.gif = { frames: [], canvas: c, next: performance.now(), done: state };
+    state(true);
+  }
+
+  private async encodeGif(frames: ImageData[], done: (on: boolean) => void) {
+    toast(`Encoding GIF (${frames.length} frames)…`, 'info', 3000);
+    const { GIFEncoder, quantize, applyPalette } = await import('gifenc');
+    const enc = GIFEncoder();
+    for (const f of frames) {
+      const palette = quantize(f.data, 256);
+      enc.writeFrame(applyPalette(f.data, palette), f.width, f.height, { palette, delay: 80 });
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    enc.finish();
+    download(new Blob([enc.bytes() as BlobPart], { type: 'image/gif' }), `windtunnel-${stamp()}.gif`);
+    done(false);
+  }
+
   afterFrame() {
+    if (this.gif && performance.now() >= this.gif.next) {
+      const g = this.gif;
+      g.next += 80;
+      if (performance.now() - g.next > 200) g.next = performance.now() + 80;
+      this.composite(g.canvas);
+      g.frames.push(g.canvas.getContext('2d')!.getImageData(0, 0, g.canvas.width, g.canvas.height));
+      if (g.frames.length >= 75) {
+        this.gif = null;
+        this.encodeGif(g.frames, g.done);
+      }
+    }
     if (this.shotPending) {
       this.shotPending = false;
       const c = document.createElement('canvas');
@@ -107,19 +147,4 @@ export class Capture {
       g.fillText(t, x + w - g.measureText(t).width, y + hgt + 13 * k);
     }
   }
-}
-
-function stamp() {
-  return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-}
-
-function download(blob: Blob, name: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
 }

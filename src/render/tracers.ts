@@ -102,6 +102,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+/** Samples the instantaneous and mean fields at up to 8 probe points. */
+export const PROBES_WGSL = /* wgsl */ `
+${FRAME_WGSL}
+struct PR { count: u32, p0: u32, p1: u32, p2: u32, pos: array<vec4<f32>, 8> };
+@group(1) @binding(0) var<uniform> PRB: PR;
+@group(1) @binding(1) var<storage, read_write> probeOut: array<vec4<f32>>;
+@compute @workgroup_size(8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= PRB.count) { return; }
+  let p = PRB.pos[i].xyz;
+  var v = sVel(p);
+  var m = sMean(p);
+  if (F.dims.w > 0.5) { v.z = 0.0; m.z = 0.0; }
+  probeOut[2u * i] = v;
+  probeOut[2u * i + 1u] = m;
+}
+`;
+
 export const STREAMLINES_WGSL = /* wgsl */ `
 ${FRAME_WGSL}
 struct SLU {

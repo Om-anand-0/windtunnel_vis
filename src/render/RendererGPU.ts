@@ -1,6 +1,6 @@
 import type { SolverGPU } from '../solver/SolverGPU';
 import type { MeshData } from '../voxelize/mesh';
-import { PARTICLES_WGSL, STREAMLINES_WGSL } from './tracers';
+import { PARTICLES_WGSL, PROBES_WGSL, STREAMLINES_WGSL } from './tracers';
 import { GROUND_WGSL, MESH_WGSL, SEGMENTS_WGSL, SLICE_WGSL, STREAM_WGSL, TRAILS_WGSL, VOLUME_WGSL } from './wgslRender';
 import type { RenderState } from './renderState';
 
@@ -55,6 +55,15 @@ export class RendererGPU {
   private groundU: GPUBuffer;
   private groundBG: GPUBindGroup;
   private segBuf: GPUBuffer;
+  private probePipe: GPUComputePipeline;
+  private probeU: GPUBuffer;
+  private probeOut: GPUBuffer;
+  private probeBG: GPUBindGroup;
+  private probeRead: { buf: GPUBuffer; busy: boolean }[] = [];
+  private probePending: { buf: GPUBuffer; busy: boolean } | null = null;
+  private probeCount = 0;
+  /** latest probe samples: per probe [ux, uy, uz, ρ] instantaneous and mean */
+  probeData: { inst: number[]; mean: number[] }[] = [];
   private segBG: GPUBindGroup;
   private segCount = 0;
 
@@ -133,7 +142,20 @@ export class RendererGPU {
     this.volBG = device.createBindGroup({ layout: this.layouts.uni, entries: [{ binding: 0, resource: { buffer: this.volU } }] });
     this.groundU = uni(32);
     this.groundBG = device.createBindGroup({ layout: this.layouts.uni, entries: [{ binding: 0, resource: { buffer: this.groundU } }] });
-    this.segBuf = device.createBuffer({ size: 48 * 64, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    this.segBuf = device.createBuffer({ size: 48 * 128, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    this.probeU = uni(16 + 16 * 8);
+    this.probeOut = device.createBuffer({ size: 2 * 8 * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    for (let i = 0; i < 3; i++) this.probeRead.push({ buf: device.createBuffer({ size: 2 * 8 * 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }), busy: false });
+    const probeLayout = device.createBindGroupLayout({ entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+    ] });
+    this.probePipe = device.createComputePipeline({
+      label: 'probes',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this.frameLayout, probeLayout] }),
+      compute: { module: device.createShaderModule({ code: PROBES_WGSL, label: 'probes' }), entryPoint: 'main' },
+    });
+    this.probeBG = device.createBindGroup({ layout: probeLayout, entries: [{ binding: 0, resource: { buffer: this.probeU } }, { binding: 1, resource: { buffer: this.probeOut } }] });
     this.segBG = device.createBindGroup({ layout: this.layouts.seg, entries: [{ binding: 0, resource: { buffer: this.segBuf } }] });
 
     this.partU = uni(80);
@@ -295,7 +317,23 @@ export class RendererGPU {
   }
 
   /** Offscreen debug mode: call after queue.submit() to blit the frame into the 2D canvas. */
+  private kickProbeRead() {
+    const r = this.probePending;
+    if (!r) return;
+    this.probePending = null;
+    const n = this.probeCount;
+    r.buf.mapAsync(GPUMapMode.READ).then(() => {
+      const d = new Float32Array(r.buf.getMappedRange().slice(0));
+      r.buf.unmap();
+      r.busy = false;
+      const out: { inst: number[]; mean: number[] }[] = [];
+      for (let i = 0; i < n; i++) out.push({ inst: Array.from(d.subarray(8 * i, 8 * i + 4)), mean: Array.from(d.subarray(8 * i + 4, 8 * i + 8)) });
+      this.probeData = out;
+    }).catch(() => (r.busy = false));
+  }
+
   afterSubmit() {
+    this.kickProbeRead();
     if (!OFFSCREEN || !this.offCopyPending || !this.offBuf) return;
     this.offCopyPending = false;
     this.offBusy = true;
@@ -400,6 +438,28 @@ export class RendererGPU {
       cp.end();
     }
 
+    // ---- probes
+    this.probeCount = Math.min(s.probes.length, 8);
+    const pr = this.probeCount ? this.probeRead.find((r) => !r.busy) : undefined;
+    if (pr) {
+      const pu = new ArrayBuffer(16 + 16 * 8);
+      new Uint32Array(pu, 0, 1)[0] = this.probeCount;
+      const pf = new Float32Array(pu, 16);
+      s.probes.slice(0, 8).forEach((p, i) => pf.set([...p.pos, 0], 4 * i));
+      d.queue.writeBuffer(this.probeU, 0, pu);
+      const cp = enc.beginComputePass({ label: 'probes' });
+      cp.setPipeline(this.probePipe);
+      cp.setBindGroup(0, this.frameBG);
+      cp.setBindGroup(1, this.probeBG);
+      cp.dispatchWorkgroups(1);
+      cp.end();
+      enc.copyBufferToBuffer(this.probeOut, 0, pr.buf, 0, 2 * 8 * 16);
+      pr.busy = true;
+      this.probePending = pr;
+    } else if (!this.probeCount) {
+      this.probeData = [];
+    }
+
     // ---- uniforms for drawing
     // mesh
     const mu = new ArrayBuffer(160);
@@ -437,6 +497,15 @@ export class RendererGPU {
       for (const x of X) for (const z of zb) seg([x, 0, z], [x, ny, z], 1.2, bc);
       if (!is2D) for (const x of X) for (const y of Y) seg([x, y, 0], [x, y, nz], 1.2, bc);
     }
+    s.probes.forEach((p, i) => {
+      const c = [...p.color, 1];
+      const k = Math.max(nx * 0.008, 1.5);
+      const [x, y, z] = p.pos;
+      seg([x - k, y, z], [x + k, y, z], 3, c);
+      seg([x, y - k, z], [x, y + k, z], 3, c);
+      if (!is2D) seg([x, y, z - k], [x, y, z + k], 3, c);
+      void i;
+    });
     if (s.rake.visible) {
       const rc = s.rake.active ? [1.0, 0.85, 0.3, 1] : [1.0, 0.75, 0.2, 0.85];
       seg(s.rake.a, s.rake.b, 3, rc);

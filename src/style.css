@@ -219,3 +219,24 @@ table.metrics td:first-child { color: var(--dim); width: 38%; }
   opacity: 0; transform: translateY(2px); transition: opacity 0.12s, transform 0.12s;
 }
 #tip.show { opacity: 1; transform: none; }
+
+.big.conv { border-color: rgba(70, 211, 154, 0.45); box-shadow: inset 0 0 0 1px rgba(70, 211, 154, 0.15); }
+.big.conv .bigs { color: var(--ok); }
+
+.probes { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.probe { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px 4px; }
+.probe .ph { display: flex; align-items: center; gap: 6px; font-size: 11.5px; }
+.probe .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.probe .pv { font: 10.5px var(--mono); color: var(--dim); margin: 2px 0; }
+
+/* ---------------------------------------------------------------- tour */
+#topbar .help { width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--line2); background: var(--panel2); color: var(--dim); cursor: pointer; font-weight: 600; flex: none; }
+#topbar .help:hover { color: var(--text); border-color: #3b4658; }
+#tour { position: fixed; inset: 0; z-index: 40; }
+.tour-spot { position: fixed; border-radius: 10px; box-shadow: 0 0 0 9999px rgba(4, 5, 8, 0.66); border: 1.5px solid var(--accent); transition: all 0.25s ease; pointer-events: none; }
+.tour-card { position: fixed; width: 320px; background: var(--panel); border: 1px solid var(--line2); border-radius: 12px; padding: 14px 16px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); transition: left 0.25s, top 0.25s; }
+.tour-card h3 { margin: 4px 0 6px; font-size: 15px; }
+.tour-card p { margin: 0 0 12px; color: var(--dim); font-size: 12.5px; line-height: 1.5; }
+.tour-step { font: 11px var(--mono); color: var(--faint); }
+.tour-btns { display: flex; justify-content: flex-end; gap: 8px; }
+.tour-btns button { background: var(--panel2); border: 1px solid var(--line2); border-radius: 6px; padding: 5px 12px; cursor: pointer; color: var(--text); }

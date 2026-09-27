@@ -88,6 +88,14 @@ export class WebGLBackend implements Backend {
     this.gpuMs = this.gpuMs * 0.7 + (interval < 1000 / 52 ? 6 : interval) * 0.3;
   }
 
+  exportFields(_maxPoints: number) {
+    return this.solver!.exportFields();
+  }
+
+  probeData() {
+    return this.renderer.probeData;
+  }
+
   solverFactory(): SolverFactory {
     return (dims, p) => new SolverGL(this.renderer.gl, dims, p);
   }

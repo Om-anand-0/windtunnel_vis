@@ -130,6 +130,16 @@ export class WebGPUBackend implements Backend {
     }).catch(() => (this.inFlight = 0));
   }
 
+  exportFields(maxPoints: number) {
+    const s = this.solver!;
+    const stride = Math.max(1, Math.ceil(Math.cbrt(s.n / maxPoints)));
+    return s.exportFields(stride);
+  }
+
+  probeData() {
+    return this.renderer.probeData;
+  }
+
   solverFactory(): SolverFactory {
     return (dims, p) => new SolverGPU(this.device, dims, p);
   }

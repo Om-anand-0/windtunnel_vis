@@ -37,6 +37,18 @@ export interface SolverStats {
   step: number;
 }
 
+/** Down-sampled field snapshot for export. All arrays are 4 floats per point, x fastest. */
+export interface FieldExport {
+  dims: [number, number, number];
+  stride: number;
+  /** (ux, uy, uz, ρ) */
+  vel: Float32Array;
+  /** time-averaged (ux, uy, uz, ρ) */
+  mean: Float32Array;
+  /** (ωx, ωy, ωz, Q) */
+  vort: Float32Array;
+}
+
 export interface GridDims {
   nx: number;
   ny: number;

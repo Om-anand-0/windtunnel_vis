@@ -2,6 +2,7 @@ import type { App } from '../app';
 import { formatRe } from '../analysis/units';
 import { COLORMAPS } from '../render/colormaps';
 import { FIELDS, GRID_2D, GRID_3D, Quality } from '../state';
+import { clearSaved } from '../persist';
 import { loadModelFile } from '../voxelize/loaders';
 import { PRESETS } from '../voxelize/presets';
 import { applyButtonTips, BUTTON_TIPS, installTooltips, PANEL_TIPS } from './tips';
@@ -11,6 +12,7 @@ import { buttonRow, Control, h, note, section, segmented, select, slider, toast,
 export class Panel {
   private ctl: Record<string, Control<any> & { setHint?(s: string): void }> = {};
   private pauseBtn!: HTMLButtonElement;
+  private placeBtn!: HTMLButtonElement;
 
   constructor(private app: App, root: HTMLElement) {
     const s = app.s;
@@ -210,6 +212,15 @@ export class Panel {
     this.ctl.rakeSpan = slider(tr, { label: 'Rake span', min: 0.05, max: 1, step: 0.01, value: s.rakeSpan, format: (v) => `${(v * 100).toFixed(0)} %`, onInput: (v) => { s.rakeSpan = v; app.backend.refillParticles(); } });
     note(tr, 'Drag the yellow handle in the viewport to move the rake.');
 
+    // ---------------------------------------------------------- probes
+    const pr = section(root, 'Probes', false);
+    const [placeBtn] = buttonRow(pr, [
+      { label: 'Place probe', onClick: () => { app.startProbePlacement(); this.sync(); } },
+      { label: 'Clear probes', onClick: () => app.clearProbes() },
+    ]);
+    this.placeBtn = placeBtn;
+    note(pr, 'Click “Place probe”, then click on the heatmap slice in the viewport. Up to 8 probes; values and a Cp trace appear in the right panel and in the CSV export.');
+
     // ---------------------------------------------------------- wake
     const wake = section(root, 'Wake & vortices', false);
     this.ctl.isoOn = toggle(wake, { label: 'Iso-surface (3D)', value: s.isoOn, onChange: (v) => (s.isoOn = v) });
@@ -236,6 +247,21 @@ export class Panel {
     const [, recBtn] = buttonRow(cam, [
       { label: 'Screenshot', onClick: () => app.capture.screenshot(), title: 'P' },
       { label: 'Record video', onClick: () => { app.capture.toggleRecording(); recBtn.textContent = app.capture.recording ? '■ Stop recording' : 'Record video'; recBtn.classList.toggle('rec', app.capture.recording); } },
+    ]);
+    const [, gifBtn] = buttonRow(cam, [
+      { label: 'Export CSV', onClick: () => app.exportCSV() },
+      { label: 'Record GIF', onClick: () => app.capture.recordGif((on) => { gifBtn.textContent = on ? 'Recording GIF…' : 'Record GIF'; gifBtn.classList.toggle('rec', on); }) },
+    ]);
+    buttonRow(cam, [{ label: 'Export flow field (.vtk)', onClick: () => app.exportVTK(), cls: 'wide' }]);
+    buttonRow(cam, [
+      {
+        label: 'Copy link', onClick: async () => {
+          const url = app.shareLink();
+          try { await navigator.clipboard.writeText(url); toast('Link to this view copied to the clipboard', 'info'); }
+          catch { window.prompt('Copy this link:', url); }
+        },
+      },
+      { label: 'Reset settings', onClick: () => { clearSaved(); location.href = location.pathname; } },
     ]);
     buttonRow(cam, [{ label: 'Validation suite…', onClick: () => app.validation.open(), cls: 'wide accent' }]);
 
@@ -276,6 +302,8 @@ export class Panel {
     (c.vehicle as any).refreshOptions();
     c.vehicle.set(s.vehicle);
     this.pauseBtn.textContent = s.paused ? '▶ Run' : '❚❚ Pause';
+    this.placeBtn.textContent = this.app.placingProbe ? 'Click in the view…' : `Place probe (${this.app.probes.length}/8)`;
+    this.placeBtn.classList.toggle('accent', this.app.placingProbe);
     this.pauseBtn.classList.toggle('accent', s.paused);
     this.pauseBtn.dataset.tip = BUTTON_TIPS.find(([k]) => this.pauseBtn.textContent!.startsWith(k))?.[1] ?? '';
     c.simSpeed.set(s.simSpeed);

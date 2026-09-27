@@ -87,6 +87,16 @@ export class CameraRig {
     this.anim = { p0: this.camera.position.clone(), p1: p, t0: this.controls.target.clone(), t1: t, start: performance.now(), dur: 650 };
   }
 
+  /** Place the camera explicitly (shared links). */
+  setView(pos: number[], target: number[]) {
+    this.anim = null;
+    this.preset = 'free';
+    this.camera.position.set(pos[0], pos[1], pos[2]);
+    this.controls.target.set(target[0], target[1], target[2]);
+    this.controls.update();
+    this.userMoved = true;
+  }
+
   update(width: number, height: number) {
     const aspect = width / Math.max(height, 1);
     if (Math.abs(aspect - this.camera.aspect) > 1e-4) {

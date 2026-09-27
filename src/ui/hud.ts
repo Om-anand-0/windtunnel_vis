@@ -4,6 +4,7 @@ import { colormapCSS } from '../render/colormaps';
 import { FIELDS } from '../state';
 import { LineChart } from './chart';
 import { HUD_TIPS } from './tips';
+import { startTour } from './tour';
 import { h } from './widgets';
 
 /** Top status bar, right-hand aero readouts with the Cd chart, and the colour legends. */
@@ -12,6 +13,8 @@ export class Hud {
   private chart: LineChart;
   private legendField: HTMLElement;
   private legendSurface: HTMLElement;
+  private probeBox: HTMLElement;
+  private probeRows: { v: HTMLElement; chart: LineChart }[] = [];
 
   constructor(private app: App, root: HTMLElement, top: HTMLElement) {
     const kv = (label: string, key: string, cls = '') => {
@@ -20,6 +23,8 @@ export class Hud {
       return h('div', { class: `kv ${cls}` }, h('span', { class: 'k' }, label), v);
     };
     top.innerHTML = '';
+    const helpBtn = h('button', { class: 'help', 'data-tip': 'Replay the quick tour' }, '?');
+    helpBtn.addEventListener('click', () => startTour());
     top.append(
       h('div', { class: 'brand' }, h('span', { class: 'logo' }), h('b', {}, 'WINDTUNNEL'), h('span', { class: 'dim' }, ' · lattice Boltzmann')),
       kv('backend', 'backend'),
@@ -30,6 +35,7 @@ export class Hud {
       kv('t·U/L', 'tconv'),
       h('div', { class: 'spacer' }),
       kv('', 'status', 'status'),
+      helpBtn,
     );
 
     root.innerHTML = '';
@@ -50,6 +56,7 @@ export class Hud {
     this.chart.xLabel = 't·U/L';
     root.append(
       h('div', { class: 'kvs' },
+        kv('C_D blockage-corrected', 'cdc'),
         kv('Drag force', 'drag'),
         kv('Downforce', 'down'),
         kv('Frontal area', 'area'),
@@ -66,6 +73,8 @@ export class Hud {
       const host = this.el[k]?.closest('.kv, .big') as HTMLElement | null;
       if (host) host.dataset.tip = tip;
     }
+    this.probeBox = h('div', { class: 'probes' });
+    root.append(this.probeBox);
     this.legendField = h('div', { class: 'legend' });
     this.legendSurface = h('div', { class: 'legend' });
     document.getElementById('legends')!.append(this.legendField, this.legendSurface);
@@ -85,6 +94,33 @@ export class Hud {
       h('div', { class: 'lg-bar', style: `background:${colormapCSS(cmap)}` }),
       h('div', { class: 'lg-ticks' }, h('span', {}, fmt(lo)), h('span', {}, fmt(mid)), h('span', {}, fmt(hi))),
     );
+  }
+
+  private updateProbes() {
+    const ps = this.app.probes;
+    if (ps.length !== this.probeRows.length) {
+      this.probeBox.innerHTML = '';
+      this.probeRows = [];
+      if (ps.length) this.probeBox.append(h('div', { class: 'hud-title', 'data-tip': 'Point probes: live speed and pressure at the marked points. The sparkline shows Cp over time (convective units).' }, 'Probes'));
+      ps.forEach((p, i) => {
+        const css = `rgb(${p.color.map((c) => Math.round(c * 255)).join(',')})`;
+        const v = h('div', { class: 'pv' });
+        const row = h('div', { class: 'probe' }, h('div', { class: 'ph' }, h('span', { class: 'dot', style: `background:${css}` }), h('b', {}, `P${i + 1}`)), v);
+        this.probeBox.append(row);
+        const chart = new LineChart(row, 34);
+        this.probeRows.push({ v, chart });
+      });
+    }
+    ps.forEach((p, i) => {
+      const r = this.probeRows[i];
+      const m = this.app.probeMetres(p);
+      const l = p.last;
+      r.v.textContent = l
+        ? `|u|/U ${l.speed.toFixed(2)} (avg ${l.speedMean.toFixed(2)})  Cp ${l.cp.toFixed(2)} (avg ${l.cpMean.toFixed(2)})  @ ${m.map((x) => x.toFixed(2)).join(', ')} m`
+        : 'sampling…';
+      const css = `rgb(${p.color.map((c) => Math.round(c * 255)).join(',')})`;
+      r.chart.draw([{ t: p.cp.t, v: p.cp.v, color: css, width: 1.2 }]);
+    });
   }
 
   update() {
@@ -107,6 +143,8 @@ export class Hud {
 
     const f3 = (v: number) => (isFinite(v) ? v.toFixed(3) : '—');
     e.cd.textContent = f3(r.cd);
+    e.cdc.textContent = f3(r.cdCorrected);
+    e.cd.parentElement!.classList.toggle('conv', r.converged);
     e.cl.textContent = f3(r.cl);
     e.cs.textContent = s.mode === '3d' ? f3(r.cs) : 'n/a';
     e.cdSub.textContent = s.mode === '3d' ? 'drag' : 'drag (2D, per span)';
@@ -117,9 +155,12 @@ export class Hud {
     e.area.textContent = `${r.frontalM2.toFixed(2)} m²`;
     e.block.textContent = `${(r.blockage * 100).toFixed(1)} %`;
     e.block.classList.toggle('warnv', r.blockage > 0.15);
-    const settling = r.convTime < 1;
-    if (settling) {
-      e.cdSub.textContent = `settling… t·U/L ${r.convTime.toFixed(2)} / 1`;
+    if (r.convTime < 1) {
+      e.cdSub.textContent = `settling… ${r.convTime.toFixed(2)} / 1`;
+    } else if (isFinite(r.cdSE)) {
+      e.cdSub.textContent = r.converged ? `±${r.cdSE.toFixed(3)} · converged` : `±${r.cdSE.toFixed(3)} · averaging ${r.avgSpan.toFixed(1)}/4`;
+    } else {
+      e.cdSub.textContent = 'averaging…';
     }
     e.reReal.textContent = formatRe(r.flow.reReal);
     e.reSim.textContent = formatRe(r.flow.reSim) + (s.reOverrideOn ? ' (override)' : '');
@@ -140,6 +181,8 @@ export class Hud {
       { t: inst.t, v: inst.v, color: '#6f86a8', width: 1, alpha: 0.55 },
       { t: a.cdAvgSeries.t, v: a.cdAvgSeries.v, color: '#ffd166', width: 1.8 },
     ]);
+
+    this.updateProbes();
 
     const fd = FIELDS[s.field];
     this.legend(this.legendField, (s.sliceMean ? 'Mean ' : '') + fd.label, fd.unit, s.cmap, s.vmin, s.vmax, s.sliceOn);

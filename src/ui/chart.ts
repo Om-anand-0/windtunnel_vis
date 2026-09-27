@@ -37,7 +37,9 @@ export class LineChart {
         if (isFinite(s.v[i])) { v0 = Math.min(v0, s.v[i]); v1 = Math.max(v1, s.v[i]); }
       }
     }
-    const padL = 34 * dpr, padR = 6 * dpr, padT = 6 * dpr, padB = 14 * dpr;
+    // tiny sparklines (probes) skip the axis furniture
+    const compact = c.clientHeight < 50;
+    const padL = (compact ? 2 : 34) * dpr, padR = (compact ? 2 : 6) * dpr, padT = (compact ? 3 : 6) * dpr, padB = (compact ? 3 : 14) * dpr;
     g.font = `${10 * dpr}px ui-monospace, SFMono-Regular, Menlo, monospace`;
     g.fillStyle = 'rgba(160,172,190,0.7)';
     if (!isFinite(t0) || t1 <= t0) {
@@ -53,13 +55,13 @@ export class LineChart {
     // grid + labels
     g.strokeStyle = 'rgba(120,135,160,0.18)';
     g.lineWidth = 1;
-    const ticks = niceTicks(v0, v1, 4);
+    const ticks = compact ? [] : niceTicks(v0, v1, 4);
     for (const tv of ticks) {
       const y = Math.round(Y(tv)) + 0.5;
       g.beginPath(); g.moveTo(padL, y); g.lineTo(w - padR, y); g.stroke();
       g.fillText(fmt(tv), 2 * dpr, y + 3 * dpr);
     }
-    if (this.xLabel) g.fillText(this.xLabel, w - padR - g.measureText(this.xLabel).width, hgt - 2 * dpr);
+    if (this.xLabel && !compact) g.fillText(this.xLabel, w - padR - g.measureText(this.xLabel).width, hgt - 2 * dpr);
     for (const s of series) {
       g.strokeStyle = s.color;
       g.globalAlpha = s.alpha ?? 1;

@@ -1,6 +1,6 @@
 import { dispatch1D } from '../gpu/device';
 import { D2Q9, D3Q19, Lattice } from './lattice';
-import { GridDims, SolverParams, SolverStats } from './types';
+import { FieldExport, GridDims, SolverParams, SolverStats } from './types';
 import { derivedWGSL, initWGSL, macroWGSL, reduceWGSL, streamCollideWGSL } from './wgslLbm';
 
 const WG = 128;
@@ -323,6 +323,62 @@ export class SolverGPU {
     const out = new Float32Array(buf.getMappedRange().slice(0));
     buf.destroy();
     return out;
+  }
+
+  private exportPipe: GPUComputePipeline | null = null;
+
+  /** Read the field textures back, sub-sampled by `stride` in every direction. */
+  async exportFields(stride: number): Promise<FieldExport> {
+    const d = this.device;
+    const { nx, ny, nz } = this.dims;
+    const o: [number, number, number] = [Math.ceil(nx / stride), Math.ceil(ny / stride), Math.ceil(nz / stride)];
+    const n = o[0] * o[1] * o[2];
+    if (!this.exportPipe) {
+      this.exportPipe = d.createComputePipeline({ layout: 'auto', compute: { entryPoint: 'main', module: d.createShaderModule({ code: /* wgsl */ `
+        struct EP { nx: u32, ny: u32, nz: u32, stride: u32, ox: u32, oy: u32, oz: u32, pad: u32 };
+        @group(0) @binding(0) var<uniform> E: EP;
+        @group(0) @binding(1) var velT: texture_3d<f32>;
+        @group(0) @binding(2) var meanT: texture_3d<f32>;
+        @group(0) @binding(3) var vortT: texture_3d<f32>;
+        @group(0) @binding(4) var<storage, read_write> outB: array<vec4<f32>>;
+        @compute @workgroup_size(4, 4, 4)
+        fn main(@builtin(global_invocation_id) g: vec3<u32>) {
+          if (g.x >= E.ox || g.y >= E.oy || g.z >= E.oz) { return; }
+          let p = vec3<i32>(min(g * E.stride, vec3<u32>(E.nx - 1u, E.ny - 1u, E.nz - 1u)));
+          let i = g.x + E.ox * (g.y + E.oy * g.z);
+          outB[3u * i] = textureLoad(velT, p, 0);
+          outB[3u * i + 1u] = textureLoad(meanT, p, 0);
+          outB[3u * i + 2u] = textureLoad(vortT, p, 0);
+        }` }) } });
+    }
+    const ub = d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    d.queue.writeBuffer(ub, 0, new Uint32Array([nx, ny, nz, stride, o[0], o[1], o[2], 0]));
+    const out = d.createBuffer({ size: n * 48, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    const rb = d.createBuffer({ size: n * 48, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    const bg = d.createBindGroup({ layout: this.exportPipe.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: ub } }, { binding: 1, resource: this.velTex.createView() },
+      { binding: 2, resource: this.meanTex.createView() }, { binding: 3, resource: this.vortTex.createView() },
+      { binding: 4, resource: { buffer: out } },
+    ] });
+    const enc = d.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(this.exportPipe);
+    pass.setBindGroup(0, bg);
+    pass.dispatchWorkgroups(Math.ceil(o[0] / 4), Math.ceil(o[1] / 4), Math.ceil(o[2] / 4));
+    pass.end();
+    enc.copyBufferToBuffer(out, 0, rb, 0, n * 48);
+    d.queue.submit([enc.finish()]);
+    await rb.mapAsync(GPUMapMode.READ);
+    const all = new Float32Array(rb.getMappedRange().slice(0));
+    rb.unmap();
+    for (const b of [ub, out, rb]) b.destroy();
+    const vel = new Float32Array(4 * n), mean = new Float32Array(4 * n), vort = new Float32Array(4 * n);
+    for (let i = 0; i < n; i++) {
+      vel.set(all.subarray(12 * i, 12 * i + 4), 4 * i);
+      mean.set(all.subarray(12 * i + 4, 12 * i + 8), 4 * i);
+      vort.set(all.subarray(12 * i + 8, 12 * i + 12), 4 * i);
+    }
+    return { dims: o, stride, vel, mean, vort };
   }
 
   /** Current population buffer (post-collision of the last step). */

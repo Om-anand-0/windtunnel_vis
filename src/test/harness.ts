@@ -15,6 +15,26 @@ async function main() {
   const params = new URLSearchParams(location.search);
   const which = (params.get('case') ?? 'freestream').split(',');
   const results: any[] = [];
+  if (which.includes('voxcheck')) {
+    // analytic check of the GPU voxelizer: a sphere must come out with the right volume and area
+    const vox = new VoxelizerGPU(g.device);
+    for (const dims of [{ nx: 128, ny: 64, nz: 64 }, { nx: 512, ny: 192, nz: 1 }]) {
+      const s = new SolverGPU(g.device, dims, { u: 0.05, nu: 0.01, cs: 0.1, ground: 'noslip', sides: 'freeslip', spongeNu: 0, spongeStart: 0.9, emaAlpha: 0 });
+      const mesh = buildPreset('sphere');
+      const pl = placementMatrix(mesh, dims, { mode: 'center', lengthFrac: 1 / 3, diamFrac: 0.3, xFrac: 0.35, yawDeg: 0, pitchDeg: 0, rideCells: 0 });
+      const info = await vox.voxelize(s, mesh, pl.matrix.elements);
+      const r = (0.3 * dims.ny) / 2;
+      const is3D = dims.nz > 1;
+      const expVol = is3D ? (4 / 3) * Math.PI * r ** 3 : Math.PI * r * r;
+      const expFront = is3D ? Math.PI * r * r : 2 * r;
+      const eV = info.solidCells / expVol - 1, eA = info.frontal / expFront - 1;
+      const passed = Math.abs(eV) < 0.03 && Math.abs(eA) < 0.05;
+      const name = `Voxelizer sphere ${is3D ? '3D' : '2D'}`;
+      log(`${name}: volume ${info.solidCells} vs ${expVol.toFixed(0)} (${(eV * 100).toFixed(1)} %), frontal ${info.frontal} vs ${expFront.toFixed(1)} (${(eA * 100).toFixed(1)} %)`);
+      results.push({ id: 'vox' + dims.nz, name, passed });
+      s.destroy();
+    }
+  }
   if (which.includes('vox')) {
     const vox = new VoxelizerGPU(g.device);
     for (const [id, dims] of [['sphere', { nx: 128, ny: 64, nz: 64 }], ['sphere', { nx: 512, ny: 192, nz: 1 }], ['sedan', { nx: 192, ny: 96, nz: 96 }], ['f1', { nx: 1024, ny: 384, nz: 1 }], ['truck', { nx: 192, ny: 96, nz: 96 }]] as const) {
@@ -148,7 +168,11 @@ async function main() {
     if (!which.includes(c.id)) continue;
     log('running ' + c.name);
     try {
-      const r = await c.run((d, p) => new SolverGPU(g.device, d, p), (f, m) => console.log(c.id, (f * 100).toFixed(0) + '%', m ?? ''), () => false);
+      let lastP = -1;
+      const r = await c.run((d, p) => new SolverGPU(g.device, d, p), (f) => {
+        const pc = Math.floor(f * 10) * 10;
+        if (pc !== lastP) { lastP = pc; console.log(`[progress] ${c.id} ${pc}%`); }
+      }, () => false);
       log(JSON.stringify({ ...r, series: undefined }, null, 1));
       if (r.series) log('series tail: ' + r.series.v.slice(-40).map((v) => v.toFixed(3)).join(' '));
       results.push(r);

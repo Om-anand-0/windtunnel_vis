@@ -1,5 +1,5 @@
 import { D2Q9, fl } from './lattice';
-import type { GridDims, SolverParams, SolverStats } from './types';
+import type { FieldExport, GridDims, SolverParams, SolverStats } from './types';
 
 /**
  * WebGL2 fragment-shader D2Q9 solver (fallback when WebGPU is unavailable).
@@ -484,6 +484,31 @@ export class SolverGL {
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       src = r.tex;
     }
+  }
+
+  /** Read the field textures back (full resolution in 2D) normalised to the FieldExport layout. */
+  async exportFields(): Promise<FieldExport> {
+    const gl = this.gl;
+    const { nx, ny } = this.dims;
+    const read = (t: GLTex) => {
+      const f = gl.createFramebuffer()!;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t.tex, 0);
+      const d = new Float32Array(nx * ny * 4);
+      gl.readPixels(0, 0, nx, ny, gl.RGBA, gl.FLOAT, d);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.deleteFramebuffer(f);
+      return d;
+    };
+    const v = read(this.velTex), m = read(this.meanTexture), w = read(this.vortTex);
+    const n = nx * ny;
+    const vel = new Float32Array(4 * n), mean = new Float32Array(4 * n), vort = new Float32Array(4 * n);
+    for (let i = 0; i < n; i++) {
+      vel.set([v[4 * i], v[4 * i + 1], 0, v[4 * i + 2]], 4 * i);
+      mean.set([m[4 * i], m[4 * i + 1], 0, m[4 * i + 2]], 4 * i);
+      vort.set([0, 0, w[4 * i], w[4 * i + 1]], 4 * i);
+    }
+    return { dims: [nx, ny, 1], stride: 1, vel, mean, vort };
   }
 
   get meanTexture(): GLTex {

@@ -1,5 +1,5 @@
 import type { RenderState } from '../render/renderState';
-import type { GridDims, SolverParams, SolverStats } from '../solver/types';
+import type { FieldExport, GridDims, SolverParams, SolverStats } from '../solver/types';
 import type { MeshData } from '../voxelize/mesh';
 import type { VoxelInfo } from '../voxelize/VoxelizerGPU';
 
@@ -41,6 +41,10 @@ export interface Backend {
   throttled(): boolean;
   /** advance the solver, update fields, draw. Statistics arrive asynchronously through onStats. */
   frame(steps: number, rs: RenderState, onStats: (s: SolverStats) => void): void;
+  /** latest probe samples ([ux, uy, uz, ρ] instantaneous + mean), in RenderState.probes order */
+  probeData(): { inst: number[]; mean: number[] }[];
+  /** read the flow fields back for export, sub-sampled so the point count stays ≲ maxPoints */
+  exportFields(maxPoints: number): Promise<FieldExport>;
   /** factory for validation solvers (fresh instances independent of the scene) */
   solverFactory(): SolverFactory;
 }

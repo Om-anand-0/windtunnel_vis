@@ -67,6 +67,16 @@ void main() {
   o = s;
 }`;
 
+const PROBES = /* glsl */ `#version 300 es
+precision highp float; precision highp int; precision highp sampler2D;
+uniform sampler2D VEL; uniform sampler2D MEAN; uniform vec2 N; uniform vec2 P[8];
+out vec4 o;
+void main() {
+  ivec2 t = ivec2(gl_FragCoord.xy);
+  vec2 uv = P[t.x] / N;
+  o = t.y == 0 ? texture(VEL, uv) : texture(MEAN, uv);
+}`;
+
 const COPY = /* glsl */ `#version 300 es
 precision highp float; precision highp int; precision highp sampler2D;
 uniform sampler2D SRC; uniform int yOff;
@@ -331,6 +341,12 @@ export class RendererGL {
   private advect: FullscreenPass;
   private copy: FullscreenPass;
   private stream: FullscreenPass;
+  private probePass: FullscreenPass;
+  private probeTex: { tex: GLTex; fbo: WebGLFramebuffer } | null = null;
+  private probeFrame = 0;
+  private probeMarks: THREE.LineSegments;
+  /** latest probe samples: per probe [ux, uy, uz, ρ] instantaneous and mean */
+  probeData: { inst: number[]; mean: number[] }[] = [];
   private vao: WebGLVertexArrayObject;
   private pState: [GLTex, GLTex] | null = null;
   private pFbo: [WebGLFramebuffer, WebGLFramebuffer] | null = null;
@@ -387,6 +403,11 @@ export class RendererGL {
     this.advect = new FullscreenPass(this.gl, ADVECT);
     this.copy = new FullscreenPass(this.gl, COPY);
     this.stream = new FullscreenPass(this.gl, STREAMLINES);
+    this.probePass = new FullscreenPass(this.gl, PROBES);
+    this.probeMarks = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false }));
+    this.probeMarks.renderOrder = 12;
+    this.probeMarks.frustumCulled = false;
+    this.scene.add(this.probeMarks);
     this.vao = this.gl.createVertexArray()!;
   }
 
@@ -584,6 +605,34 @@ export class RendererGL {
         .i('useMean', SL.useMean ? 1 : 0).f2('rakeA', rs.rake.a[0], rs.rake.a[1]).f2('rakeB', rs.rake.b[0], rs.rake.b[1]).f('h', SL.step).f('U', Math.max(rs.flow.U, 1e-4));
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
+    // probes: 8×2 texels (row 0 instantaneous, row 1 mean), read back every few frames
+    const np = Math.min(rs.probes.length, 8);
+    if (np && this.probeFrame++ % 3 === 0) {
+      if (!this.probeTex) {
+        const t = makeTex(gl, 8, 2, gl.RGBA32F, gl.RGBA, gl.FLOAT);
+        const f = gl.createFramebuffer()!;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t.tex, 0);
+        this.probeTex = { tex: t, fbo: f };
+      }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.probeTex.fbo);
+      gl.viewport(0, 0, 8, 2);
+      const PP = this.probePass.use();
+      PP.tex('VEL', 0, s.velTex.tex).tex('MEAN', 1, s.meanTexture.tex).f2('N', nx, ny);
+      const pts = new Float32Array(16);
+      rs.probes.slice(0, 8).forEach((p, i) => pts.set([p.pos[0], p.pos[1]], 2 * i));
+      gl.uniform2fv(PP.u('P[0]'), pts);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      const d = new Float32Array(64);
+      gl.readPixels(0, 0, 8, 2, gl.RGBA, gl.FLOAT, d);
+      // GL layout is (ux, uy, ρ, ·) → normalise to (ux, uy, uz, ρ)
+      this.probeData = Array.from({ length: np }, (_, i) => ({
+        inst: [d[4 * i], d[4 * i + 1], 0, d[4 * i + 2]],
+        mean: [d[32 + 4 * i], d[32 + 4 * i + 1], 0, d[32 + 4 * i + 2]],
+      }));
+    } else if (!np) {
+      this.probeData = [];
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.bindVertexArray(null);
     three.resetState();
@@ -642,6 +691,19 @@ export class RendererGL {
       const rad = Math.max(ny * 0.012, 2);
       this.rakeHandle.matrix.makeTranslation(m.x, m.y, 0.6).multiply(new THREE.Matrix4().makeScale(rad, rad, 1));
       (this.rakeHandle.material as THREE.MeshBasicMaterial).color.set(rs.rake.active ? 0xffe08a : 0xffc233);
+    }
+    {
+      const pos: number[] = [], col: number[] = [];
+      const k = Math.max(nx * 0.008, 1.5);
+      for (const p of rs.probes) {
+        const [x, y] = p.pos;
+        pos.push(x - k, y, 0.6, x + k, y, 0.6, x, y - k, 0.6, x, y + k, 0.6);
+        for (let j = 0; j < 4; j++) col.push(...p.color);
+      }
+      const g = this.probeMarks.geometry;
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+      this.probeMarks.visible = pos.length > 0;
     }
     three.render(this.scene, this.cam);
   }
